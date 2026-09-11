@@ -3,12 +3,27 @@
 #   Stage 1 (node)   : 构建 React + Vite 前端静态资源
 #   Stage 2 (python) : 安装后端依赖，内置前端产物，由 FastAPI 统一提供 Web 服务
 # 说明：构建上下文为项目根目录，所有路径均为相对路径，不含任何绝对路径。
+#
+# 构建期可用参数（国内服务器建议显式传入，避免从 Docker Hub / PyPI 拉取超时）：
+#   docker build \
+#     --build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
+#     --build-arg NPM_REGISTRY=https://registry.npmmirror.com \
+#     -t limit-up-pullback:latest .
+# 一键脚本会自动从 .env 读取并传入这些参数。
 # =============================================================================
+
+# 显式声明目标平台，避免在 Apple Silicon 上为 amd64 构建、
+# 或在 arm64 服务器上被 QEMU 模拟导致构建慢上百倍（实测过）
+ARG TARGETPLATFORM
 
 # ---------------------------------------------------------------------------
 # Stage 1 —— 前端构建
 # ---------------------------------------------------------------------------
-FROM node:20-alpine AS frontend-builder
+FROM --platform=${TARGETPLATFORM} node:20-alpine AS frontend-builder
+
+# npm 镜像源：国内服务器直连 registry.npmjs.org 会极慢甚至超时
+ARG NPM_REGISTRY=https://registry.npmmirror.com
+ENV NPM_CONFIG_REGISTRY=${NPM_REGISTRY}
 
 WORKDIR /build/frontend
 
@@ -30,7 +45,20 @@ RUN npm run build
 # ---------------------------------------------------------------------------
 # Stage 2 —— 后端运行时
 # ---------------------------------------------------------------------------
-FROM python:3.12-slim AS runtime
+FROM --platform=${TARGETPLATFORM} python:3.12-slim AS runtime
+
+# pip 源与超时策略（关键）：
+#   实测国内服务器直连 files.pythonhosted.org 只有约 18 KB/s，
+#   下载 numpy（16.7 MB）耗时 18 分钟、pandas（11 MB）直接读超时，
+#   导致构建失败。因此默认走国内镜像，并把 PyPI 作为备用源
+#   （extra-index-url 使「国内镜像没有的包」仍能从官方源取到）。
+#   海外服务器可传 --build-arg PIP_INDEX_URL=https://pypi.org/simple 覆盖。
+ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+ARG PIP_EXTRA_INDEX_URL=https://pypi.org/simple
+ENV PIP_INDEX_URL=${PIP_INDEX_URL} \
+    PIP_EXTRA_INDEX_URL=${PIP_EXTRA_INDEX_URL} \
+    PIP_DEFAULT_TIMEOUT=120 \
+    PIP_RETRIES=10
 
 LABEL org.opencontainers.image.title="Limit-Up-Pullback-Buy-Setup" \
       org.opencontainers.image.description="Limit-up pullback buy-setup stock screener" \

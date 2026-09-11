@@ -233,15 +233,48 @@ curl -s http://127.0.0.1:8000/api/v1/health
 
 最后在**云服务商控制台 → 安全组**放行 `8000/tcp`，浏览器访问 `http://<公网IP>:8000` 即可。
 
-### 4.1 国内网络加速（可选）
+### 4.1 国内网络加速（**必看**）
 
-拉取基础镜像缓慢时，为 Docker 配置镜像加速：
+国内云服务器直连 Docker Hub 与 PyPI 会**极慢甚至构建失败**。实测数据（某国内云服务器）：
+
+```
+python:3.12-slim 基础镜像拉取      3845 秒（约 64 分钟）
+Downloading numpy-2.5.3.whl (16.7MB)   18.4 kB/s → 耗时 18 分钟
+Downloading pandas-3.0.5.whl (11.0MB)  253.6 kB/s → 读到 7.6MB 时超时
+pip._vendor.urllib3.exceptions.ReadTimeoutError
+  → failed to solve: process "pip install ..." did not complete successfully: exit code 2
+```
+
+**本项目已内置国内镜像默认值**（`Dockerfile` + `docker-compose.yml` 的 `build.args`），
+一键脚本会自动传入，正常情况下无需任何额外配置：
+
+| 参数 | 默认值 | 作用 |
+|---|---|---|
+| `PIP_INDEX_URL` | `https://pypi.tuna.tsinghua.edu.cn/simple` | Python 包主源 |
+| `PIP_EXTRA_INDEX_URL` | `https://pypi.org/simple` | 备用源（国内镜像缺失的包回退官方） |
+| `NPM_REGISTRY` | `https://registry.npmmirror.com` | npm 包源 |
+
+海外服务器请在 `.env` 中改回官方源：
+
+```bash
+PIP_INDEX_URL=https://pypi.org/simple
+PIP_EXTRA_INDEX_URL=
+NPM_REGISTRY=https://registry.npmjs.org
+```
+
+#### 加速 Docker Hub（建议在国内服务器上配置）
+
+即使 pip/npm 走国内镜像，**基础镜像仍从 Docker Hub 拉取**（实测 `python:3.12-slim` 用了 64 分钟）。配置镜像加速：
 
 ```bash
 sudo mkdir -p /etc/docker
 sudo tee /etc/docker/daemon.json >/dev/null <<'EOF'
 {
-  "registry-mirrors": ["https://docker.m.daocloud.io", "https://dockerproxy.com"],
+  "registry-mirrors": [
+    "https://docker.m.daocloud.io",
+    "https://docker.1ms.run",
+    "https://dockerproxy.com"
+  ],
   "log-driver": "json-file",
   "log-opts": { "max-size": "10m", "max-file": "3" }
 }
@@ -249,7 +282,52 @@ EOF
 sudo systemctl daemon-reload && sudo systemctl restart docker
 ```
 
-### 4.2 以普通用户部署
+> 可用镜像站会随时间变化，若上述地址失效请搜索当前可用的 Docker 镜像加速器。
+
+#### 更稳妥的替代方案：本地构建后导入
+
+网络实在不可靠时，在**有良好网络的机器**上构建镜像再导入服务器（同时避免服务器长时间占用）：
+
+```bash
+# ---------- 有网机器（架构需与服务器一致，如同一为 x86_64） ----------
+docker build -t limit-up-pullback:latest .
+docker save limit-up-pullback:latest | gzip > limit-up-pullback.tar.gz
+
+# 传输
+scp limit-up-pullback.tar.gz user@<服务器IP>:/opt/
+
+# ---------- 目标服务器 ----------
+gunzip -c /opt/limit-up-pullback.tar.gz | docker load
+docker compose up -d --no-build      # 直接用已导入的镜像，不再构建
+```
+
+**arm64 服务器注意**：若在有网机器上构建，必须指定目标架构，否则导入后无法运行：
+
+```bash
+docker buildx build --platform linux/amd64 -t limit-up-pullback:latest --load .
+```
+
+#### 若构建仍然失败
+
+`exit code 2` 只是 pip 的退出码，**真正原因在它上面的日志里**。定位方法：
+
+```bash
+# 只看 pip 阶段，保留完整输出
+docker build --progress=plain --no-cache -t limit-up-pullback:test . 2>&1 | tee build.log
+# 然后查关键行
+grep -nE 'ERROR|ReadTimeout|Could not find|No matching distribution|Downloading (numpy|pandas)' build.log | tail -40
+```
+
+常见原因与对策：
+
+| 日志特征 | 原因 | 对策 |
+|---|---|---|
+| `ReadTimeoutError ... files.pythonhosted.org` | PyPI 网络超时 | 已默认走国内镜像；确认 `.env` 未被改成官方源 |
+| `Could not find a version that satisfies` | Python 版本不匹配 | 本项目要求 Python 3.12（镜像已固定） |
+| `No matching distribution ... for cp312` | 平台无对应 wheel | 检查是否跨架构（见上方 arm64 说明） |
+| `/bin/sh: gcc: not found` | 需源码编译但无编译器 | 极少数情况；可 `apt-get install build-essential python3-dev` |
+
+## 4.2 以普通用户部署
 
 ```bash
 sudo useradd -m -s /bin/bash deploy
