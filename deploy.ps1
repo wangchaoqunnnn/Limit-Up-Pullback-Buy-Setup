@@ -23,7 +23,7 @@
 [CmdletBinding()]
 param(
     [int]$Port = 0,
-    [ValidateSet('auto', 'eastmoney', 'synthetic')]
+    [ValidateSet('auto', 'real', 'eastmoney', 'tencent', 'ths', 'sina', 'synthetic')]
     [string]$Mode = '',
     [string]$Domain = '',
     [string]$Email = '',
@@ -175,8 +175,8 @@ function Initialize-Env {
     }
     $dm = Get-EnvValue -Key 'DATA_SOURCE_MODE'
     if ([string]::IsNullOrWhiteSpace($dm)) { $dm = 'auto'; Set-EnvValue -Key 'DATA_SOURCE_MODE' -Value $dm }
-    if (@('auto', 'eastmoney', 'synthetic') -notcontains $dm) {
-        Write-Err "DATA_SOURCE_MODE 非法：$dm（应为 auto / eastmoney / synthetic）"
+    if (@('auto', 'real', 'eastmoney', 'tencent', 'ths', 'sina', 'synthetic') -notcontains $dm) {
+        Write-Err "DATA_SOURCE_MODE 非法：$dm（应为 auto / real / eastmoney / tencent / ths / sina / synthetic）"
         exit 1
     }
     $script:HostPort = $parsed

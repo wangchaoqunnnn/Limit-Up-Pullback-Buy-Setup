@@ -87,7 +87,7 @@ class Settings(BaseSettings):
     @classmethod
     def _check_mode(cls, v: str) -> str:
         v = (v or "auto").strip().lower()
-        allowed = {"auto", "real", "eastmoney", "tencent", "sina", "synthetic"}
+        allowed = {"auto", "real", "eastmoney", "tencent", "ths", "sina", "synthetic"}
         if v not in allowed:
             logger.warning("非法的 DATA_SOURCE_MODE=%s，已回退为 auto", v)
             return "auto"
@@ -135,7 +135,7 @@ class Settings(BaseSettings):
             if name and name not in seen:
                 seen.add(name)
                 out.append(name)
-        return out or ["eastmoney", "tencent", "sina"]
+        return out or ["eastmoney", "tencent", "ths", "sina"]
 
     # ------------------------------------------------------------------ 路径
     @property

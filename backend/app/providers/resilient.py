@@ -736,6 +736,16 @@ class ResilientProvider(BaseProvider):
         result: dict[str, pd.DataFrame] = {}
         for days_wanted, group in groups.items():
             remaining = list(group)
+            # 本批次里「被某个源判为数据不足（< MIN_BARS）」的股票，用于**事后归因**。
+            # 关键：数据不足有两种完全不同的成因，必须区分，否则会误杀健康源 ——
+            #   a) 源自身的能力缺陷（腾讯对北交所 920xxx 一律只给 1 根）→ 该源该罚；
+            #   b) 股票本身历史就短（次新股，如实测 920071 上市仅 7 个交易日）→ 与源无关。
+            # 成因 b 若也记失败，一次批量里只要有 1 只次新股，四个源就全被判故障；
+            # 而「从未成功过」的源会被长期跳过，于是进程冷启动后会把**所有源一起判死**，
+            # 真实行情整体不可用（本 Bug 已实测复现）。
+            thin_by_source: dict[str, list[str]] = {}
+            ok_sources: set[str] = set()
+            resolved: dict[str, pd.DataFrame] = {}
             for source in self._ordered_sources():
                 if not remaining:
                     break
@@ -768,8 +778,9 @@ class ResilientProvider(BaseProvider):
                     ok_frames[str(code)] = df
 
                 if thin:
+                    thin_by_source[source.name] = thin
                     logger.warning(
-                        "数据源 %s 对 %d 只股票返回的日线过少（< %d 根），判定为取数失败并切换下一个源"
+                        "数据源 %s 对 %d 只股票返回的日线过少（< %d 根），继续向后续源取"
                         "（示例：%s）",
                         source.name,
                         len(thin),
@@ -777,16 +788,39 @@ class ResilientProvider(BaseProvider):
                         thin[:5],
                     )
                 if not ok_frames:
-                    health.record_failure(f"返回空结果或数据量不足（{len(thin)} 只过少）")
+                    # 注意：这里**不记失败**。是否该记，取决于后续源能不能补齐，
+                    # 统一放到本批次末尾按 thin_by_source 事后归因。
+                    # 仅当「全空且没有任何数据不足的迹象」时才是明确的取数失败
+                    # （如域名被阻断、接口返回空列表）。
+                    if not thin:
+                        health.record_failure("返回空结果")
                     continue
 
                 health.record_success()
+                ok_sources.add(source.name)
                 self._active_source = source.name
                 self._last_pick["日线"] = source.name
                 self.cache.upsert_many(ok_frames)
                 result.update(ok_frames)
+                resolved.update(ok_frames)
                 # 仍缺失或数据量不足的交给下一个源补
                 remaining = [c for c in remaining if c not in result]
+
+            # 事后归因（见本批次开头的说明）：
+            # 只有「某源判不足、但后续源成功取到」才证明是该源的能力缺陷，此时才记失败；
+            # 若所有源都判不足，则是股票自身历史太短，不牵连任何源的健康度。
+            # 另外，某源在本批已成功供数（ok_sources）说明其能力正常，
+            # 不因个别标的的差异被降级 —— 否则主力源会因次新股反复进入冷却，
+            # 把全市场扫描的取数压力推给更慢的备用源。
+            for src_name, thin_codes in thin_by_source.items():
+                if src_name in ok_sources:
+                    continue
+                fixed = [c for c in thin_codes if c in resolved]
+                if fixed:
+                    self.health[src_name].record_failure(
+                        f"有 {len(fixed)} 只股票的日线不足 {MIN_BARS} 根（已由其他源补齐）"
+                    )
+
             if remaining:
                 # 这些股票在所有源上都拿不到足够历史：写入负缓存，
                 # 冷却期内不再重试（默认 30 分钟，避免每次刷新都白跑一轮上游请求）。
@@ -794,8 +828,10 @@ class ResilientProvider(BaseProvider):
                 for code in remaining:
                     self._unavailable_until[code] = retry_after
                 logger.warning(
-                    "有 %d 只股票在所有源上均未取到足够日线，%.0f 分钟内不再重试（示例：%s）",
+                    "有 %d 只股票在所有源上均未取到足够日线（多为上市不足 %d 个交易日的"
+                    "次新股，均线判据无法计算），%.0f 分钟内不再重试（示例：%s）",
                     len(remaining),
+                    MIN_BARS,
                     UNAVAILABLE_RETRY_SECONDS / 60,
                     remaining[:5],
                 )

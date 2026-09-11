@@ -162,7 +162,9 @@ async def test_thin_data_raises_when_no_source_has_history(provider: ResilientPr
     frames = await provider.get_daily_kline_batch(["920000"], 250)
     # 不应返回残缺数据（会被策略误用）
     assert "920000" not in frames or len(frames["920000"]) == 0
-
+    # 所有源一致判「不足」= 股票自身历史太短，任何源都不应被记为故障
+    assert provider.health["a"].total_failure == 0
+    assert provider.health["b"].total_failure == 0
 
 @pytest.mark.asyncio
 async def test_healthy_source_is_not_penalized(provider: ResilientProvider):
@@ -220,3 +222,95 @@ async def test_incomplete_universe_is_not_snapshotted(provider: ResilientProvide
     await provider.get_stock_list()
     assert provider._universe_complete is False
     assert not provider._settings.stock_list_file.exists(), "残缺列表不应写入快照"
+
+
+# --------------------------------------------------------------------- 归因
+# 以下用例锁定一个**已实测复现的严重 Bug**：
+# 次新股（上市不足 MIN_BARS 个交易日）的历史本来就短，任何数据源都给不出
+# 足够根数。此前的实现把「数据量不足」一律记为**数据源失败**，
+# 于是一次批量里只要有 1 只次新股，四个源就全被记为失败；
+# 而「从未成功过」的源会被永久跳过（NEVER_SUCCEEDED_THRESHOLD=1），
+# 因此新进程的第一次请求就可能把**全部数据源一起判死**，
+# 之后连贵州茅台这样的正常股票都取不到行情 —— 真实数据整体静默不可用。
+# 正确行为：数据量不足必须继续向后续源尝试，但只有在**后续源能补齐**时
+# 才证明是该源自身的能力缺陷，此时才记失败。
+
+
+@pytest.mark.asyncio
+async def test_new_listing_thin_on_every_source_does_not_kill_health(provider: ResilientProvider):
+    """次新股在所有源上都数据不足时，绝不能牵连任何数据源的健康度。"""
+    from app.providers.source_base import SourceHealth
+
+    # 920071（金钛股份）实测上市仅 7 个交易日：腾讯/同花顺/新浪一致给不出 20 根
+    a = StubSource("a", bars={"920071": 7})
+    b = StubSource("b", bars={"920071": 16})
+    c = StubSource("c", bars={"920071": 18})
+    provider.sources = [a, b, c]
+    provider.health = {s.name: SourceHealth(name=s.name) for s in provider.sources}
+
+    frames = await provider.get_daily_kline_batch(["920071"], 250)
+
+    assert "920071" not in frames, "不足 MIN_BARS 的数据不得进入策略引擎"
+    for name in ("a", "b", "c"):
+        health = provider.health[name]
+        assert health.total_failure == 0, f"{name} 不应因次新股被判故障"
+        assert health.available() is True, f"{name} 不应被标记为不可用"
+        assert health.snapshot()["skipped"] is False, f"{name} 不应被长期跳过"
+    # 三个源都应被真正尝试过（数据不足仍要按顺序取，只是不归咎于源）
+    assert a.kline_calls == 1 and b.kline_calls == 1 and c.kline_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_thin_data_alone_must_not_disable_the_whole_chain(provider: ResilientProvider):
+    """核心回归：一次次新股请求之后，正常股票仍必须能取到真实行情。"""
+    from app.providers.source_base import SourceHealth
+
+    # 源 a 只有次新股数据（会判不足），源 b 同时有次新股与正常股票
+    a = StubSource("a", bars={"920071": 7})
+    b = StubSource("b", bars={"920071": 7, "600519": 250})
+    provider.sources = [a, b]
+    provider.health = {s.name: SourceHealth(name=s.name) for s in provider.sources}
+
+    # 第一步：只请求次新股（模拟股票池里恰好只有它需要补数据）
+    await provider.get_daily_kline_batch(["920071"], 250)
+    assert provider.health["a"].available() is True
+    assert provider.health["b"].available() is True
+
+    # 第二步：同一个 provider 继续请求正常股票，必须仍然拿得到数据
+    frames = await provider.get_daily_kline_batch(["600519"], 250)
+    assert "600519" in frames
+    assert len(frames["600519"]) == 250
+
+
+@pytest.mark.asyncio
+async def test_thin_source_is_penalized_only_when_another_source_fixes_it(
+    provider: ResilientProvider,
+):
+    """某源判不足、但后续源能补齐时，说明是该源自身缺陷，此时才记失败。"""
+    from app.providers.source_base import SourceHealth
+
+    thin = StubSource("thin", bars={"920000": 1})
+    good = StubSource("good", bars={"920000": 250})
+    provider.sources = [thin, good]
+    provider.health = {s.name: SourceHealth(name=s.name) for s in provider.sources}
+
+    frames = await provider.get_daily_kline_batch(["920000"], 250)
+
+    assert len(frames["920000"]) == 250
+    assert provider.health["thin"].total_failure >= 1, "腾讯式「只给 1 根」应被记为缺陷"
+    assert provider.health["good"].total_failure == 0
+    assert provider.health["good"].total_success >= 1
+
+
+@pytest.mark.asyncio
+async def test_empty_result_is_still_recorded_as_failure(provider: ResilientProvider):
+    """源返回完全空结果（如被网络阻断）仍必须记为失败 —— 归因改动不能放宽这条。"""
+    from app.providers.source_base import SourceHealth
+
+    empty = StubSource("empty", bars={})
+    provider.sources = [empty]
+    provider.health = {s.name: SourceHealth(name=s.name) for s in provider.sources}
+
+    await provider.get_daily_kline_batch(["600519"], 250)
+
+    assert provider.health["empty"].total_failure >= 1
