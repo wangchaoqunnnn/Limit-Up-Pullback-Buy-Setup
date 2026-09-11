@@ -47,7 +47,14 @@ class Settings(BaseSettings):
 
     # 真实数据源优先级（逗号分隔）。故障转移按此顺序尝试；
     # 出现连续失败的源会进入指数退避冷却，冷却结束后自动恢复参与。
-    data_source_order: str = "eastmoney,tencent,sina"
+    #
+    # 顺序说明（实测依据）：
+    #   eastmoney 全市场列表字段最全，排第一（部分网络会阻断该域名，会快速失败跳过）
+    #   tencent   列表与日线都稳，但列表缺科创板/北交所
+    #   ths       同花顺：日线**覆盖四个板块含北交所**，且速度最快（实测 0.03s/只）；
+    #             同时提供股票中文名称，是补齐科创板/北交所的关键补充源
+    #   sina      列表覆盖四板块（三 node 并集），但列表接口有反爬限流
+    data_source_order: str = "eastmoney,tencent,ths,sina"
 
     # 数据目录（相对路径按 backend/ 解析；留空则使用 backend/data）
     data_dir: str = ""

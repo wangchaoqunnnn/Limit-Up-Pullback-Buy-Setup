@@ -110,7 +110,7 @@ WORKDIR /app/backend
 ENV APP_HOST=0.0.0.0 \
     APP_PORT=8000 \
     DATA_SOURCE_MODE=auto \
-    DATA_SOURCE_ORDER=eastmoney,tencent,sina \
+    DATA_SOURCE_ORDER=eastmoney,tencent,ths,sina \
     DATA_DIR=./data \
     CACHE_TTL_SECONDS=300 \
     UNIVERSE_SIZE=0 \

@@ -78,6 +78,10 @@ def build_sources(order: Sequence[str], timeout: float, concurrency: int, kline_
                 from .sina import SinaSource
 
                 built.append(SinaSource(timeout=timeout, concurrency=kline_concurrency))
+            elif name == "ths":
+                from .ths import TongHuaShunSource
+
+                built.append(TongHuaShunSource(timeout=timeout, concurrency=kline_concurrency))
             else:
                 logger.warning("未知的数据源名称：%s（已跳过）", name)
         except ImportError as exc:  # 适配器文件缺失时不应导致启动失败
