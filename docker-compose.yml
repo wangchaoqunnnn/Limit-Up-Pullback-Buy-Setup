@@ -11,14 +11,16 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        # 构建期镜像源。国内服务器直连 Docker Hub / PyPI / npmjs 常常极慢或超时
-        # （实测 pip 从 files.pythonhosted.org 只有 18 KB/s，pandas 直接读超时）。
-        # 海外服务器可在 .env 里改成官方地址：
+        # 构建期镜像源：默认**全程使用国内镜像**（实测国内服务器直连
+        # files.pythonhosted.org 只有 18 KB/s，pandas 会读超时导致构建失败）。
+        #   主源   清华 TUNA
+        #   备用源 中科大 USTC（同为国内镜像，互为容灾）
+        # 海外服务器可在 .env 中改为官方源：
         #   PIP_INDEX_URL=https://pypi.org/simple
         #   PIP_EXTRA_INDEX_URL=
         #   NPM_REGISTRY=https://registry.npmjs.org
         PIP_INDEX_URL: "${PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}"
-        PIP_EXTRA_INDEX_URL: "${PIP_EXTRA_INDEX_URL:-https://pypi.org/simple}"
+        PIP_EXTRA_INDEX_URL: "${PIP_EXTRA_INDEX_URL:-https://pypi.mirrors.ustc.edu.cn/simple}"
         NPM_REGISTRY: "${NPM_REGISTRY:-https://registry.npmmirror.com}"
     image: ${IMAGE_NAME:-limit-up-pullback}:${IMAGE_TAG:-latest}
     container_name: ${CONTAINER_NAME:-limit-up-app}

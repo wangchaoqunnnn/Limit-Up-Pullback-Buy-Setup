@@ -50,11 +50,15 @@ FROM --platform=${TARGETPLATFORM} python:3.12-slim AS runtime
 # pip 源与超时策略（关键）：
 #   实测国内服务器直连 files.pythonhosted.org 只有约 18 KB/s，
 #   下载 numpy（16.7 MB）耗时 18 分钟、pandas（11 MB）直接读超时，
-#   导致构建失败。因此默认走国内镜像，并把 PyPI 作为备用源
-#   （extra-index-url 使「国内镜像没有的包」仍能从官方源取到）。
-#   海外服务器可传 --build-arg PIP_INDEX_URL=https://pypi.org/simple 覆盖。
+#   导致构建失败（报 exit code 2）。因此默认**全程使用国内镜像**：
+#     主源   清华 TUNA   https://pypi.tuna.tsinghua.edu.cn/simple
+#     备用源 中科大 USTC https://pypi.mirrors.ustc.edu.cn/simple
+#   两个都是国内镜像（实测分别 2.0s / 1.4s 响应），互为容灾，
+#   不依赖任何境外源。
+#   海外服务器可传 --build-arg 覆盖为官方源：
+#     --build-arg PIP_INDEX_URL=https://pypi.org/simple --build-arg PIP_EXTRA_INDEX_URL=
 ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
-ARG PIP_EXTRA_INDEX_URL=https://pypi.org/simple
+ARG PIP_EXTRA_INDEX_URL=https://pypi.mirrors.ustc.edu.cn/simple
 ENV PIP_INDEX_URL=${PIP_INDEX_URL} \
     PIP_EXTRA_INDEX_URL=${PIP_EXTRA_INDEX_URL} \
     PIP_DEFAULT_TIMEOUT=120 \
