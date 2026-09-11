@@ -1,0 +1,369 @@
+/* ==========================================================================
+   全局基础样式：重置、排版、滚动条、焦点、通用工具类、关键帧
+   ========================================================================== */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  /*
+   * 顶层提示浮层（.tt-bubble）挂在顶栏右上角，右边界会越出视口约 18px。
+   * 只在 body 上写 overflow-x 不足以裁剪——必须同时作用在根元素 html 上，
+   * 否则整页会出现横向滚动条。
+   * 注意：不可写在 #root 上（会破坏表格 sticky 列与表内横向滚动），
+   * 也不要用 clip-path（会创建包含块，破坏 position:fixed 的弹窗与 Toast）。
+   */
+  overflow-x: hidden;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: var(--fs-14);
+  line-height: 1.5;
+  color: var(--text-1);
+  background: var(--bg-0);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  transition: background-color var(--t-base) var(--ease), color var(--t-base) var(--ease);
+  /*
+   * 顶层提示浮层（.tt-bubble）挂在顶栏右上角，其右边界会略微越过视口；
+   * 若不在此处裁剪，整页会产生约 18px 的横向滚动条。
+   * 注意：不能写在 #root 上（会破坏表格 sticky 列与内部横向滚动），
+   * 也不要用 clip-path（会创建包含块并破坏 position:fixed 的弹窗/Toast）。
+   */
+  overflow-x: hidden;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5 {
+  margin: 0;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+p {
+  margin: 0;
+}
+
+a {
+  color: var(--brand);
+  text-decoration: none;
+  transition: color var(--t-fast) var(--ease);
+}
+
+a:hover {
+  color: var(--brand-strong);
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+ul,
+ol {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+table {
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+svg {
+  display: block;
+}
+
+:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+  border-radius: var(--r-xs);
+}
+
+/* ------------------------------- 滚动条 ------------------------------- */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border: 3px solid transparent;
+  background-clip: content-box;
+  border-radius: var(--r-pill);
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--text-3);
+  background-clip: content-box;
+}
+
+/* ------------------------------- 工具类 ------------------------------- */
+.mono,
+.num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
+}
+
+.num {
+  transition: color var(--t-base) var(--ease);
+}
+
+.up {
+  color: var(--up);
+}
+
+.down {
+  color: var(--down);
+}
+
+.flat {
+  color: var(--flat);
+}
+
+.text-1 {
+  color: var(--text-1);
+}
+
+.text-2 {
+  color: var(--text-2);
+}
+
+.text-3 {
+  color: var(--text-3);
+}
+
+.brand-text {
+  color: var(--brand);
+}
+
+.gold-text {
+  color: var(--gold);
+}
+
+.danger-text {
+  color: var(--danger);
+}
+
+/* 结论色工具类：与涨跌红绿解耦 */
+.teal-text {
+  color: var(--signal-pass);
+}
+
+.strong {
+  font-weight: 600;
+}
+
+.nowrap {
+  white-space: nowrap;
+}
+
+.ellipsis {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* 响应式可见性工具 */
+.only-mobile {
+  display: none !important;
+}
+
+@media (max-width: 768px) {
+  .only-mobile {
+    display: grid !important;
+  }
+  .hide-mobile {
+    display: none !important;
+  }
+}
+
+/* 中等宽度（<1100px）折叠顶栏次要信息：倒计时 / 最后更新时间。
+   数据源标识与市场状态不在此列，任何宽度都必须可见。 */
+@media (max-width: 1100px) {
+  .hide-narrow {
+    display: none !important;
+  }
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
+
+.row-between {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+}
+
+.col {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.wrap {
+  flex-wrap: wrap;
+}
+
+.grow {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.fs-11 {
+  font-size: var(--fs-11);
+}
+
+.fs-12 {
+  font-size: var(--fs-12);
+}
+
+.fs-13 {
+  font-size: var(--fs-13);
+}
+
+.fs-18 {
+  font-size: var(--fs-18);
+}
+
+.fs-24 {
+  font-size: var(--fs-24);
+}
+
+.mt-2 {
+  margin-top: var(--sp-2);
+}
+
+.mt-4 {
+  margin-top: var(--sp-4);
+}
+
+.divider {
+  height: 1px;
+  background: var(--border);
+  border: 0;
+  margin: 0;
+}
+
+.divider-v {
+  width: 1px;
+  align-self: stretch;
+  background: var(--border);
+}
+
+/* ------------------------------- 关键帧 ------------------------------- */
+@keyframes lupbs-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes lupbs-shimmer {
+  0% {
+    background-position: -420px 0;
+  }
+  100% {
+    background-position: 420px 0;
+  }
+}
+
+@keyframes lupbs-toast-in {
+  from {
+    opacity: 0;
+    transform: translateX(18px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes lupbs-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes lupbs-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+@keyframes lupbs-draw {
+  from {
+    stroke-dashoffset: var(--dash, 1000);
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

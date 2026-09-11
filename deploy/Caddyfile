@@ -1,0 +1,51 @@
+# =============================================================================
+# Caddy 反向代理配置（仅 https profile 启用）
+# 域名与邮箱通过环境变量注入，配置内不写死任何域名或 IP。
+# =============================================================================
+
+{
+	email {$ACME_EMAIL}
+	admin off
+}
+
+# 当 DOMAIN 为空时，退化为纯 HTTP 反代（用于无域名/内网环境自测）
+:80 {
+	encode zstd gzip
+
+	# 容器内后端服务名固定为 app（compose 网络内解析）
+	reverse_proxy app:{$APP_PORT} {
+		header_up Host {host}
+		header_up X-Real-IP {remote_host}
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Forwarded-Proto {scheme}
+		flush_interval -1
+	}
+}
+
+# 有域名时：自动申请并续期 Let's Encrypt 证书，HTTP 自动跳转 HTTPS
+{$DOMAIN} {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "SAMEORIGIN"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	reverse_proxy app:{$APP_PORT} {
+		header_up Host {host}
+		header_up X-Real-IP {remote_host}
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Forwarded-Proto {scheme}
+		flush_interval -1
+	}
+
+	log {
+		output file /data/access.log {
+			roll_size 10mb
+			roll_keep 5
+		}
+	}
+}

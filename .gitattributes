@@ -1,0 +1,58 @@
+# =============================================================================
+# 换行符策略
+#
+# 背景：Windows 默认 core.autocrlf=true，会把文本文件在检出时转成 CRLF。
+# 这会让 deploy.sh 在 Linux/macOS 上出现 `bad interpreter: /bin/bash^M`，
+# 也会让容器内的 shell 脚本执行失败。因此这里显式固化：
+#   - *.sh 一律使用 LF（Linux 可执行）
+#   - Dockerfile / *.yml / Caddyfile 使用 LF（容器内解析）
+#   - 其余文本文件统一 LF，避免跨平台 diff 噪声
+# =============================================================================
+
+# 默认：交给 Git 按内容自动判定，统一为 LF
+* text=auto eol=lf
+
+# Shell 脚本必须是 LF，否则 Linux 上无法执行
+*.sh text eol=lf
+deploy.sh text eol=lf
+
+# 容器与编排相关文件用 LF
+Dockerfile text eol=lf
+*.dockerfile text eol=lf
+docker-compose.yml text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+Caddyfile text eol=lf
+.dockerignore text eol=lf
+
+# Windows PowerShell 脚本保持 CRLF（Windows 习惯；注意 deploy.ps1 另存为 UTF-8 with BOM）
+*.ps1 text eol=crlf
+*.psm1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 二进制资源不做换行符转换
+*.jpg binary
+*.jpeg binary
+*.png binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.gz binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.eot binary
+*.sqlite binary
+*.db binary
+
+# 语言与格式的 diff 提示
+*.py text diff=python
+*.ts text diff=typescript
+*.tsx text diff=typescript
+*.json text
+*.md text
+*.css text
+*.html text

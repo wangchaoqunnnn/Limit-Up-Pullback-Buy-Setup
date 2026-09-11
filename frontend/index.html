@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark" data-updown="red-up">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="theme-color" content="#0B0E14" />
+    <meta
+      name="description"
+      content="涨停回调低吸战法量化选股终端：五大共振信号、支撑位阶梯、分批交易计划与历史回测。仅供技术研究与学习使用。"
+    />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http%3A//www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230B0E14'/%3E%3Cpath d='M6 21.5l6-6.5 4.5 4L26 10' stroke='%232E7CF6' stroke-width='2.6' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3Ccircle cx='26' cy='10' r='2.6' fill='%23F5A623'/%3E%3C/svg%3E"
+    />
+    <title>涨停回调低吸战法 · 量化选股终端</title>
+    <script>
+      // 首屏前置应用主题，避免闪白/闪黑
+      (function () {
+        try {
+          var t = localStorage.getItem('lupbs.theme');
+          var c = localStorage.getItem('lupbs.updown');
+          var root = document.documentElement;
+          root.setAttribute('data-theme', t === 'light' ? 'light' : 'dark');
+          root.setAttribute('data-updown', c === 'green-up' ? 'green-up' : 'red-up');
+        } catch (e) {
+          /* 隐私模式下忽略 */
+        }
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

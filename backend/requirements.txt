@@ -1,0 +1,16 @@
+# 涨停回调低吸战法 —— 后端依赖（Python 3.12）
+# 说明：刻意不引入 akshare（体积大且接口易碎），真实数据源直接走东方财富公开 HTTP 接口。
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+pydantic>=2.7.0
+pydantic-settings>=2.3.0
+httpx>=0.27.0
+numpy>=1.26.0
+pandas>=2.2.0
+python-dateutil>=2.9.0
+orjson>=3.10.0
+
+# 测试依赖
+pytest>=8.2.0
+pytest-asyncio>=0.23.0
+respx>=0.21.0

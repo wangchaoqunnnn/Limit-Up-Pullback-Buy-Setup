@@ -1,0 +1,91 @@
+# =============================================================================
+# 涨停回调低吸战法 —— Git 忽略清单
+# =============================================================================
+
+# ------------------------------ 环境与密钥 ------------------------------
+.env
+.env.local
+.env.*.local
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+secrets/
+.credentials*
+
+# ------------------------------ Python ------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+downloads/
+eggs/
+.eggs/
+lib64/
+parts/
+sdist/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.venv/
+venv/
+ENV/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# ------------------------------ Node / 前端 ------------------------------
+node_modules/
+dist/
+dist-ssr/
+.vite/
+*.local
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.eslintcache
+*.tsbuildinfo
+
+# ------------------------------ 运行期数据 ------------------------------
+backend/data/
+data/
+*.sqlite
+*.db
+logs/
+*.log
+
+# ------------------------------ 编辑器与系统 ------------------------------
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ------------------------------ 本地临时 ------------------------------
+tmp/
+.tmp/
+.cache/
+
+# ------------------------------ 开发/调试临时产物 ------------------------------
+# 视觉与 QA 核对过程产生的截图、切片、日志等，不属于交付物
+.vision-crops/
+.review/
+_qa/
+*.review.png
+*.crop.png

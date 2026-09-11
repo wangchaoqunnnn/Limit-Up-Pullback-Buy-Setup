@@ -1,0 +1,209 @@
+/* ==========================================================================
+   设计令牌 —— 深色专业金融终端 / 浅色办公主题
+   语义分工：品牌色（蓝/青/金/红）与 A 股涨跌色（--up / --down）严格分离。
+   ========================================================================== */
+
+:root {
+  /* 字体栈：标题/正文使用系统中文栈，数字使用等宽栈 */
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", "Source Han Sans SC", "Noto Sans CJK SC",
+    Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: ui-monospace, "JetBrains Mono", "SF Mono", "SFMono-Regular", Menlo,
+    Consolas, "Liberation Mono", monospace;
+
+  /* 字号 */
+  --fs-11: 11px;
+  --fs-12: 12px;
+  --fs-13: 13px;
+  --fs-14: 14px;
+  --fs-16: 16px;
+  --fs-18: 18px;
+  --fs-20: 20px;
+  --fs-24: 24px;
+  --fs-30: 30px;
+  --fs-38: 38px;
+
+  /* 间距 */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-7: 32px;
+  --sp-8: 40px;
+
+  /* 圆角 */
+  --r-xs: 4px;
+  --r-sm: 6px;
+  --r-md: 8px;
+  --r-lg: 12px;
+  --r-xl: 16px;
+  --r-pill: 999px;
+
+  /* 动效 */
+  --ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --t-fast: 150ms;
+  --t-base: 200ms;
+  --t-slow: 250ms;
+
+  /* 布局 */
+  --sidebar-w: 216px;
+  --sidebar-w-collapsed: 64px;
+  --topbar-h: 56px;
+  --content-max: 1920px;
+}
+
+/* ------------------------------ 深色主题 ------------------------------ */
+:root[data-theme='dark'] {
+  --bg-0: #0b0e14;
+  --bg-1: #111624;
+  --bg-2: #161c2d;
+  --bg-3: #1e2536;
+  --bg-inverse: #e6eaf2;
+
+  --surface: #161c2d;
+  --surface-2: #1a2133;
+  --surface-hover: #1e2536;
+  --surface-sunken: #0e1320;
+
+  --border: rgba(255, 255, 255, 0.07);
+  --border-strong: rgba(255, 255, 255, 0.13);
+  --hairline: rgba(255, 255, 255, 0.05);
+  --inset-highlight: rgba(255, 255, 255, 0.06);
+
+  --text-1: #e6eaf2;
+  --text-2: #8a94a6;
+  /* 三级灰承担「代码 / 刻度 / 分组标签 / 副信息」等信息职责，必须达到 WCAG AA 4.5:1
+     #808b9e 对卡片底色 #161c2d 实测 ≈ 5.0:1，同时仍与 --text-2 保持可辨的层级差。 */
+  --text-3: #808b9e;
+
+  --brand: #2e7cf6;
+  --brand-soft: rgba(46, 124, 246, 0.14);
+  --brand-strong: #4a8dff;
+  --teal: #12b886;
+  --teal-soft: rgba(18, 184, 134, 0.14);
+  --gold: #f5a623;
+  --gold-soft: rgba(245, 166, 35, 0.14);
+  --danger: #f0454a;
+  --danger-soft: rgba(240, 69, 74, 0.14);
+  --violet: #8b5cf6;
+  --violet-soft: rgba(139, 92, 246, 0.14);
+
+  --grid-line: rgba(255, 255, 255, 0.06);
+  /* 图表坐标轴 / 刻度文字：≥11px 可读，对比度 ≈ 6:1 */
+  --axis-text: #98a3b8;
+  /* 环形图中性扇区（如「放弃」占比）：权重低于主色，但仍满足 ≥3:1 非文本对比 */
+  --arc-muted: #5b6785;
+  /* 图表内叠字底板光晕（paint-order: stroke 用） */
+  --chart-halo: rgba(11, 14, 20, 0.86);
+
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --shadow-2: 0 4px 14px rgba(0, 0, 0, 0.42);
+  --shadow-panel: 0 1px 0 rgba(255, 255, 255, 0.04) inset,
+    0 2px 6px rgba(0, 0, 0, 0.28), 0 12px 32px rgba(0, 0, 0, 0.22);
+  --shadow-pop: 0 10px 40px rgba(0, 0, 0, 0.55);
+  --scrim: rgba(4, 6, 12, 0.68);
+  --skeleton-a: #1a2133;
+  --skeleton-b: #222b40;
+  --chart-area-top: rgba(46, 124, 246, 0.34);
+  --chart-area-bottom: rgba(46, 124, 246, 0);
+}
+
+/* ------------------------------ 浅色主题 ------------------------------ */
+:root[data-theme='light'] {
+  --bg-0: #f2f5fa;
+  --bg-1: #ffffff;
+  --bg-2: #ffffff;
+  --bg-3: #eef2f8;
+  --bg-inverse: #10131a;
+
+  --surface: #ffffff;
+  --surface-2: #fbfcfe;
+  --surface-hover: #f2f6fd;
+  --surface-sunken: #f4f6fa;
+
+  --border: rgba(16, 24, 40, 0.1);
+  --border-strong: rgba(16, 24, 40, 0.18);
+  --hairline: rgba(16, 24, 40, 0.06);
+  --inset-highlight: rgba(255, 255, 255, 0.9);
+
+  --text-1: #16203a;
+  --text-2: #5a6478;
+  --text-3: #6b7688;
+
+  --brand: #1f6bdd;
+  --brand-soft: rgba(31, 107, 221, 0.1);
+  --brand-strong: #17559c;
+  --teal: #0e9b73;
+  --teal-soft: rgba(14, 155, 115, 0.12);
+  --gold: #c67c07;
+  --gold-soft: rgba(198, 124, 7, 0.13);
+  --danger: #d92b30;
+  --danger-soft: rgba(217, 43, 48, 0.1);
+  --violet: #6d3ff0;
+  --violet-soft: rgba(109, 63, 240, 0.1);
+
+  --grid-line: rgba(16, 24, 40, 0.07);
+  --axis-text: #5a6478;
+  --arc-muted: #7d8798;
+  --chart-halo: rgba(255, 255, 255, 0.9);
+
+  --shadow-1: 0 1px 2px rgba(16, 24, 40, 0.06);
+  --shadow-2: 0 4px 12px rgba(16, 24, 40, 0.08);
+  --shadow-panel: 0 1px 0 rgba(255, 255, 255, 0.9) inset,
+    0 1px 2px rgba(16, 24, 40, 0.06), 0 8px 26px rgba(16, 24, 40, 0.07);
+  --shadow-pop: 0 12px 36px rgba(16, 24, 40, 0.18);
+  --scrim: rgba(16, 24, 40, 0.35);
+  --skeleton-a: #eceff5;
+  --skeleton-b: #f6f8fc;
+  --chart-area-top: rgba(31, 107, 221, 0.26);
+  --chart-area-bottom: rgba(31, 107, 221, 0);
+}
+
+/* --------------------- A 股涨跌色（红涨绿跌为默认） --------------------- */
+:root[data-updown='red-up'] {
+  --up: #f0454a;
+  --up-soft: rgba(240, 69, 74, 0.13);
+  --down: #12b886;
+  --down-soft: rgba(18, 184, 134, 0.13);
+  --flat: #8a94a6;
+}
+
+/* 色盲友好：绿涨红跌 */
+:root[data-updown='green-up'] {
+  --up: #12b886;
+  --up-soft: rgba(18, 184, 134, 0.13);
+  --down: #f0454a;
+  --down-soft: rgba(240, 69, 74, 0.13);
+  --flat: #8a94a6;
+}
+
+:root[data-theme='light'][data-updown='red-up'] {
+  --up: #d92b30;
+  --up-soft: rgba(217, 43, 48, 0.11);
+  --down: #0e9b73;
+  --down-soft: rgba(14, 155, 115, 0.11);
+}
+
+:root[data-theme='light'][data-updown='green-up'] {
+  --up: #0e9b73;
+  --up-soft: rgba(14, 155, 115, 0.11);
+  --down: #d92b30;
+  --down-soft: rgba(217, 43, 48, 0.11);
+}
+
+/* 语义别名（结论色 / 信号色）
+ *
+ * 重要：这些语义色【不得】绑定到 --up / --down。
+ * 涨跌色会随用户的「红涨绿跌 / 绿涨红跌」偏好整体翻转，而「可低吸」「信号通过」
+ * 属于策略结论，不是价格方向。若绑定则切换配色后「可低吸」会变成绿色，
+ * 语义被完全颠倒。因此这里使用独立的品牌蓝（结论）与青绿（通过）。
+ */
+:root {
+  --verdict-buy: var(--brand);
+  --verdict-watch: var(--gold);
+  --verdict-reject: var(--text-3);
+  --signal-pass: var(--teal);
+  --signal-fail: var(--text-3);
+}
