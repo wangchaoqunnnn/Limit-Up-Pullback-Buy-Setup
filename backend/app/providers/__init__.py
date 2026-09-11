@@ -6,7 +6,7 @@
 |---|---|
 | ``auto``      | 依次尝试 ``DATA_SOURCE_ORDER`` 中的真实源；**全部不可用**才降级为合成演示数据 |
 | ``real``      | 同上，但绝不降级为合成数据（全部真实源失败则接口报 503），用于生产 |
-| ``eastmoney`` / ``tencent`` / ``ths`` / ``sina`` | 强制只使用该单一真实源 |
+| ``eastmoney`` / ``tencent`` / ``ths`` / ``sina`` / ``yahoo`` | 强制只使用该单一真实源 |
 | ``synthetic`` | 强制使用合成演示数据（完全离线，用于演示与自动化测试） |
 
 与旧实现的区别（重要）：
@@ -45,7 +45,7 @@ __all__ = [
 _provider: BaseProvider | None = None
 _lock = asyncio.Lock()
 
-REAL_MODES = {"auto", "real", "eastmoney", "tencent", "ths", "sina"}
+REAL_MODES = {"auto", "real", "eastmoney", "tencent", "ths", "sina", "yahoo"}
 
 
 def _build_synthetic() -> SyntheticProvider:
@@ -75,7 +75,7 @@ async def _build_provider() -> BaseProvider:
     provider = ResilientProvider()
 
     # 单一源模式：只保留指定的那个源
-    if mode in {"eastmoney", "tencent", "ths", "sina"}:
+    if mode in {"eastmoney", "tencent", "ths", "sina", "yahoo"}:
         provider.sources = [s for s in provider.sources if s.name == mode]
         provider.health = {s.name: provider.health[s.name] for s in provider.sources}
         if not provider.sources:

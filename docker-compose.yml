@@ -32,9 +32,10 @@ services:
       APP_HOST: "0.0.0.0"
       APP_PORT: "${APP_PORT:-8000}"
       # 真实行情模式：auto=按 DATA_SOURCE_ORDER 依次尝试真实源，全失败才降级演示数据
-      #               real=绝不降级（生产推荐）；也可强制单源 eastmoney/tencent/sina
+      #               real=绝不降级（生产推荐）；也可强制单源 eastmoney/tencent/ths/sina/yahoo
       DATA_SOURCE_MODE: "${DATA_SOURCE_MODE:-auto}"
-      DATA_SOURCE_ORDER: "${DATA_SOURCE_ORDER:-eastmoney,tencent,ths,sina}"
+      # 末位 yahoo（雅虎财经）为独立境外兜底源，不提供北交所与全市场列表
+      DATA_SOURCE_ORDER: "${DATA_SOURCE_ORDER:-eastmoney,tencent,ths,sina,yahoo}"
       DATA_DIR: "./data"
       CACHE_TTL_SECONDS: "${CACHE_TTL_SECONDS:-300}"
       # 股票池覆盖范围：0 = 不限量、覆盖全部 A 股（主板/创业板/科创板/北交所，约 5500 只）

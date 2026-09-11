@@ -1,4 +1,4 @@
-﻿# =============================================================================
+# =============================================================================
 # 涨停回调低吸战法 —— 一键部署脚本（Windows / PowerShell 5.1+ / PowerShell 7+）
 #
 # 编码要求：本文件必须保存为 UTF-8 with BOM。Windows PowerShell 5.1 读取无 BOM 的
@@ -23,7 +23,7 @@
 [CmdletBinding()]
 param(
     [int]$Port = 0,
-    [ValidateSet('auto', 'real', 'eastmoney', 'tencent', 'ths', 'sina', 'synthetic')]
+    [ValidateSet('auto', 'real', 'eastmoney', 'tencent', 'ths', 'sina', 'yahoo', 'synthetic')]
     [string]$Mode = '',
     [string]$Domain = '',
     [string]$Email = '',
@@ -175,8 +175,8 @@ function Initialize-Env {
     }
     $dm = Get-EnvValue -Key 'DATA_SOURCE_MODE'
     if ([string]::IsNullOrWhiteSpace($dm)) { $dm = 'auto'; Set-EnvValue -Key 'DATA_SOURCE_MODE' -Value $dm }
-    if (@('auto', 'real', 'eastmoney', 'tencent', 'ths', 'sina', 'synthetic') -notcontains $dm) {
-        Write-Err "DATA_SOURCE_MODE 非法：$dm（应为 auto / real / eastmoney / tencent / ths / sina / synthetic）"
+    if (@('auto', 'real', 'eastmoney', 'tencent', 'ths', 'sina', 'yahoo', 'synthetic') -notcontains $dm) {
+        Write-Err "DATA_SOURCE_MODE 非法：$dm（应为 auto / real / eastmoney / tencent / ths / sina / yahoo / synthetic）"
         exit 1
     }
     $script:HostPort = $parsed

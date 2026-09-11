@@ -57,6 +57,7 @@ eastmoney  失败 → 自动切换
 tencent    股票列表缺科创板/北交所（4602 只）→ 继续尝试下一个源
 sina       股票列表覆盖完整（5561 只，四板块齐全）→ 采用
 日线：tencent 对北交所只给 1 根 → 判定取数失败 → 切 ths（同花顺）拿到完整历史
+末位 yahoo（雅虎财经）为独立境外源，仅前四个国内源全失效时兜底（不含北交所）
 ```
 
 即系统**按操作逐个源尝试并校验数据质量**，既能故障转移，也能识别「不报错但数据不全」的隐蔽情况。
@@ -234,7 +235,7 @@ Limit-Up-Pullback-Buy-Setup/
 │   │   ├── models.py        Pydantic 数据模型
 │   │   ├── strategy.py      ★ 战法规则引擎
 │   │   ├── store.py         低吸池与参数持久化
-│   │   ├── providers/       数据源：eastmoney / tencent / ths / sina / synthetic
+│   │   ├── providers/       数据源：eastmoney / tencent / ths / sina / yahoo / synthetic
 │   │   └── routers/         接口路由
 │   └── tests/               单元测试 + 接口测试
 ├── frontend/                React 前端
@@ -266,7 +267,7 @@ Limit-Up-Pullback-Buy-Setup/
 |---|---|---|
 | `HOST_PORT` | `8000` | 宿主机对外端口（云安全组需放行） |
 | `DATA_SOURCE_MODE` | `auto` | `auto` 自动切换 / `real` 只用真实数据不降级 / 单源 / `synthetic` 完全离线 |
-| `DATA_SOURCE_ORDER` | `eastmoney,tencent,ths,sina` | 真实数据源优先级（故障转移顺序） |
+| `DATA_SOURCE_ORDER` | `eastmoney,tencent,ths,sina,yahoo` | 真实数据源优先级（故障转移顺序） |
 | `REFRESH_INTERVAL_SECONDS` | `30` | **开盘期间刷新间隔**（后端 TTL 与前端轮询共用） |
 | `CACHE_TTL_SECONDS` | `300` | 非开盘时段的缓存有效期 |
 | `UNIVERSE_SIZE` | `0` | **0=覆盖全部 A 股**（约 5561 只）；设正整数则按板块轮转截取 |

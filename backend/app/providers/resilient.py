@@ -82,6 +82,10 @@ def build_sources(order: Sequence[str], timeout: float, concurrency: int, kline_
                 from .ths import TongHuaShunSource
 
                 built.append(TongHuaShunSource(timeout=timeout, concurrency=kline_concurrency))
+            elif name == "yahoo":
+                from .yahoo import YahooSource
+
+                built.append(YahooSource(timeout=timeout, concurrency=kline_concurrency))
             else:
                 logger.warning("未知的数据源名称：%s（已跳过）", name)
         except ImportError as exc:  # 适配器文件缺失时不应导致启动失败
@@ -184,11 +188,15 @@ class ResilientProvider(BaseProvider):
 
     @staticmethod
     def _supports(source: MarketSource, capability: str | None) -> bool:
+        # 用 getattr 取能力标记：``supports_index`` 是后续新增的可选能力，
+        # 缺失时按「支持」处理（与加入该标记之前的行为一致），
+        # 避免任何一个自定义/第三方适配器因未声明新标记而直接抛 AttributeError。
         if capability is None:
             return True
         return {
-            "stock_list": source.supports_stock_list,
-            "realtime": source.supports_realtime,
+            "stock_list": getattr(source, "supports_stock_list", True),
+            "realtime": getattr(source, "supports_realtime", True),
+            "index": getattr(source, "supports_index", True),
         }.get(capability, True)
 
     async def _try_sources(
@@ -828,11 +836,12 @@ class ResilientProvider(BaseProvider):
                 for code in remaining:
                     self._unavailable_until[code] = retry_after
                 logger.warning(
-                    "有 %d 只股票在所有源上均未取到足够日线（多为上市不足 %d 个交易日的"
-                    "次新股，均线判据无法计算），%.0f 分钟内不再重试（示例：%s）",
+                    "有 %d 只股票在所有源上均未取到足够日线，%.0f 分钟内不再重试"
+                    "（成因通常是：上市不足 %d 个交易日的次新股，或现有源都不覆盖该板块，"
+                    "如雅虎不提供北交所；示例：%s）",
                     len(remaining),
-                    MIN_BARS,
                     UNAVAILABLE_RETRY_SECONDS / 60,
+                    MIN_BARS,
                     remaining[:5],
                 )
 
@@ -862,7 +871,7 @@ class ResilientProvider(BaseProvider):
         if self._using_fallback:
             return await self.fallback.get_index_snapshot()
         try:
-            data, _ = await self._try_sources("获取指数快照", None, lambda s: s.index_snapshot())
+            data, _ = await self._try_sources("获取指数快照", "index", lambda s: s.index_snapshot())
             return list(data)
         except DataSourceError as exc:
             logger.warning("指数快照全部源失败：%s", exc)

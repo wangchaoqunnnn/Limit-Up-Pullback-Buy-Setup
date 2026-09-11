@@ -172,6 +172,9 @@ class TongHuaShunSource(MarketSource):
     name = "ths"
     supports_stock_list = False
     supports_realtime = True
+    #: 指数体系与个股不同（1A0001 等），本项目不采用 —— 显式声明为「不支持」，
+    #: 使其被排除在指数取数之外，而不是参与后被记一次失败（错误归因）。
+    supports_index = False
 
     async def probe(self) -> None:
         """用一只主板股票的日线做轻量探测。"""

@@ -51,6 +51,7 @@ class StubSource:
         self.name = name
         self.supports_stock_list = True
         self.supports_realtime = False
+        self.supports_index = False
         self._bars = bars or {}
         self._fail = fail
         self._stocks = stocks or []

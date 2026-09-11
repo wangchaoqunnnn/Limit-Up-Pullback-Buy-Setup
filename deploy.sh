@@ -190,8 +190,8 @@ EOF
   # 数据源模式校验
   local dm; dm="$(env_get DATA_SOURCE_MODE)"; dm="${dm:-auto}"
   case "$dm" in
-    auto|real|eastmoney|tencent|ths|sina|synthetic) ;;
-    *) err "DATA_SOURCE_MODE 只能为 auto / real / eastmoney / tencent / ths / sina / synthetic，当前为「$dm」"; exit 1 ;;
+    auto|real|eastmoney|tencent|ths|sina|yahoo|synthetic) ;;
+    *) err "DATA_SOURCE_MODE 只能为 auto / real / eastmoney / tencent / ths / sina / yahoo / synthetic，当前为「$dm」"; exit 1 ;;
   esac
 
   HOST_PORT_RESOLVED="$hp"

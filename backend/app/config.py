@@ -39,10 +39,10 @@ class Settings(BaseSettings):
     app_host: str = "0.0.0.0"
     app_port: int = 8000
 
-    # 数据源模式：auto / real / eastmoney / tencent / sina / synthetic
+    # 数据源模式：auto / real / eastmoney / tencent / ths / sina / yahoo / synthetic
     #   auto      —— 按 DATA_SOURCE_ORDER 依次尝试真实源，全部不可用才降级为合成数据
     #   real      —— 同 auto，但绝不降级为合成数据（全部真实源失败则报错）
-    #   单个源名  —— 强制只用该源（eastmoney / tencent / sina / synthetic）
+    #   单个源名  —— 强制只用该源（eastmoney / tencent / ths / sina / yahoo / synthetic）
     data_source_mode: str = "auto"
 
     # 真实数据源优先级（逗号分隔）。故障转移按此顺序尝试；
@@ -54,7 +54,10 @@ class Settings(BaseSettings):
     #   ths       同花顺：日线**覆盖四个板块含北交所**，且速度最快（实测 0.03s/只）；
     #             同时提供股票中文名称，是补齐科创板/北交所的关键补充源
     #   sina      列表覆盖四板块（三 node 并集），但列表接口有反爬限流
-    data_source_order: str = "eastmoney,tencent,ths,sina"
+    #   yahoo     雅虎财经：**完全独立的境外源**，日线约 243 根且与同花顺逐字段一致，
+    #             但不提供北交所与全市场列表 —— 仅作最后兜底，
+    #             防范国内几个免费源因同一网络策略/反爬批次同时失效
+    data_source_order: str = "eastmoney,tencent,ths,sina,yahoo"
 
     # 数据目录（相对路径按 backend/ 解析；留空则使用 backend/data）
     data_dir: str = ""
@@ -87,7 +90,7 @@ class Settings(BaseSettings):
     @classmethod
     def _check_mode(cls, v: str) -> str:
         v = (v or "auto").strip().lower()
-        allowed = {"auto", "real", "eastmoney", "tencent", "ths", "sina", "synthetic"}
+        allowed = {"auto", "real", "eastmoney", "tencent", "ths", "sina", "yahoo", "synthetic"}
         if v not in allowed:
             logger.warning("非法的 DATA_SOURCE_MODE=%s，已回退为 auto", v)
             return "auto"
@@ -135,7 +138,7 @@ class Settings(BaseSettings):
             if name and name not in seen:
                 seen.add(name)
                 out.append(name)
-        return out or ["eastmoney", "tencent", "ths", "sina"]
+        return out or ["eastmoney", "tencent", "ths", "sina", "yahoo"]
 
     # ------------------------------------------------------------------ 路径
     @property

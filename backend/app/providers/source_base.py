@@ -272,6 +272,12 @@ class MarketSource:
     #: 该源是否支持「实时批量行情」
     supports_realtime: bool = True
 
+    #: 该源是否支持「主要指数快照」。
+    #: 置 False 的源会被**排除**在指数取数之外，而不是参与后再抛错 ——
+    #: 否则一个只是不提供指数、但日线完全正常的源（如同花顺）
+    #: 会在每次指数请求时被记为失败并进入冷却，属于错误归因。
+    supports_index: bool = True
+
     def __init__(self, timeout: float = 10.0, concurrency: int = 12) -> None:
         self.timeout = float(timeout)
         self.concurrency = int(concurrency)
