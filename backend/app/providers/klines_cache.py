@@ -144,6 +144,20 @@ class KlineCache:
             except sqlite3.Error:
                 return 0
 
+    def all_codes(self) -> list[str]:
+        """返回缓存中所有已有日线的股票代码。
+
+        用途：当上游列表源临时不可用（例如新浪被反爬限流）导致拿不到完整股票列表时，
+        可用缓存里已有的代码补全股票池，避免「明明有数据却因为列表不全而漏掉整块板块」。
+        """
+        with self._lock:
+            try:
+                rows = self.conn.execute("SELECT DISTINCT code FROM bars ORDER BY code").fetchall()
+                return [str(r[0]) for r in rows if r[0]]
+            except sqlite3.Error as exc:
+                logger.warning("读取缓存股票代码失败：%s", exc)
+                return []
+
     def last_write_age(self, code: str) -> float | None:
         """某只股票距离上次写入缓存过去了多少秒。
 

@@ -93,9 +93,21 @@ KLINE_BASES: tuple[str, ...] = (
 #: 主入口（保持与接口文档一致）
 KLINE_URL = KLINE_BASES[0]
 
-#: 排行榜（全市场股票列表）：成交额降序 + offset 分页
+#: 排行榜（股票列表）：成交额降序 + offset 分页
 RANK_URL = "https://proxy.finance.qq.com/cgi/cgi-bin/rank/hs/getBoardRankList"
-#: board_code=aStock 表示沪深 A 股全市场（实测 data.total≈4600）
+#: 全量覆盖尝试的板块并集：
+#:   aStock → 4602 只，仅含沪深**主板**与**创业板**（实测 data.total=4602）
+#:   ksh    → 617 只**科创板**、cyb → 1407 只创业板（**间歇可用**，见下方说明）
+#:
+#: 实测注意（2026-09）：``board_code`` 取 ``ksh``/``cyb`` 时，
+#: **首个请求可用，随后该接口对本机会持续返回空数组**（疑似按 IP 的会话级限流），
+#: 恢复时间不确定。因此这里把它们作为「尽力而为」的补充来源：
+#: 拿到就合并，拿不到也不影响 aStock 的结果，更不会报错。
+#: 科创板的**可靠**来源仍是新浪 ``sh_a`` 节点（见 SinaSource.list_stocks_all），
+#: 由 ResilientProvider 做板块完整性校验后择优采用。
+#: 北交所在腾讯侧无任何可用板块号，只能由新浪 ``hs_a`` 提供。
+RANK_BOARDS: tuple[str, ...] = ("aStock", "ksh", "cyb")
+#: 兼容既有引用
 RANK_BOARD = "aStock"
 #: 单页条数：实测 count=200 也可用，但 count=500 会返回空数组，故保守取 100
 RANK_PAGE_SIZE = 100
@@ -526,41 +538,49 @@ class TencentSource(MarketSource):
 
         **重要局限（实测）**：``board_code=aStock`` 的 ``total`` 约为 4602，
         只包含沪深主板（``GP-A``）与创业板（``GP-A-CYB``），
-        **不含科创板与北交所**。因此本方法只作为兜底来源；
-        完整覆盖由 ``SinaSource.list_stocks_all()``（三 node 并集）提供，
-        ``ResilientProvider`` 会做板块完整性校验后择优采用。
+        **实测覆盖范围**（2026-09 验证）：``aStock`` 只有沪深主板与创业板，
+        因此这里额外并上 ``ksh``（**科创板** 617 只）与 ``cyb``（创业板 1407 只），
+        否则整个科创板会被漏掉。北交所在腾讯侧无可用板块号，
+        仍需新浪的 ``hs_a`` 节点补齐，``ResilientProvider`` 会做完整性校验。
         """
         collected: dict[str, StockMeta] = {}
-        offset = 0
-        page = 0
-        while page < TEN_MAX_ALL_PAGES:
-            rows = await self._fetch_rank_page(offset)
-            if not rows:
-                break
-            for row in rows:
-                parsed = _rank_row_to_meta(row)
-                if parsed is None:
-                    continue
-                _, meta = parsed
-                collected.setdefault(meta.code, meta)
-            if len(rows) < RANK_PAGE_SIZE:
-                break
-            offset += len(rows)
-            page += 1
+        per_board: dict[str, int] = {}
+        for board_code in RANK_BOARDS:
+            before = len(collected)
+            offset = 0
+            page = 0
+            while page < TEN_MAX_ALL_PAGES:
+                rows = await self._fetch_rank_page(offset, board_code=board_code)
+                if not rows:
+                    break
+                for row in rows:
+                    parsed = _rank_row_to_meta(row)
+                    if parsed is None:
+                        continue
+                    _, meta = parsed
+                    collected.setdefault(meta.code, meta)
+                if len(rows) < RANK_PAGE_SIZE:
+                    break
+                offset += len(rows)
+                page += 1
+            per_board[board_code] = len(collected) - before
+            logger.info("tencent %s 板块新增 %d 只（累计 %d）", board_code, per_board[board_code], len(collected))
         if not collected:
             raise MarketSourceError("tencent 未返回任何股票列表")
         boards: dict[str, int] = {}
         for meta in collected.values():
             boards[meta.board] = boards.get(meta.board, 0) + 1
-        logger.info("tencent 列表加载完成：%d 只，板块分布 %s（不含科创板/北交所）", len(collected), boards)
+        logger.info("tencent 列表加载完成：%d 只，板块分布 %s（北交所需由新浪补齐）", len(collected), boards)
         return list(collected.values())
 
-    async def _fetch_rank_page(self, offset: int, count: int = RANK_PAGE_SIZE) -> list[dict[str, Any]]:
-        """取排行榜的一页（``count`` 实测不得超过 100，传 500 会静默返回空数组）。"""
+    async def _fetch_rank_page(
+        self, offset: int, count: int = RANK_PAGE_SIZE, board_code: str = RANK_BOARD
+    ) -> list[dict[str, Any]]:
+        """取某个板块排行榜的一页（``count`` 实测不得超过 100，传 500 会静默返回空数组）。"""
         data = await self.get_json(
             RANK_URL,
             params={
-                "board_code": RANK_BOARD,
+                "board_code": board_code,
                 "sort_type": "turnover",
                 "direct": "down",
                 "offset": int(offset),

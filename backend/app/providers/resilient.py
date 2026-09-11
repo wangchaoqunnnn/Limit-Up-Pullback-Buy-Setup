@@ -32,7 +32,14 @@ from .base import BaseProvider, DataSourceError, empty_kline
 from .industry import IndustryEnricher
 from .klines_cache import KlineCache
 from .synthetic import SyntheticProvider
-from .source_base import MarketSource, MarketSourceError, SourceHealth
+from .source_base import (
+    MarketSource,
+    MarketSourceError,
+    SourceHealth,
+    board_of_code,
+    limit_pct,
+    market_of_code,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -256,7 +263,10 @@ class ResilientProvider(BaseProvider):
             #    绝不允许「静默漏掉某个板块」。
             metas, source_name, _coverage = await self._fetch_best_universe()
             if metas:
-                metas = self._rank_and_limit(list(metas))
+                # 上游列表可能缺板块（例如新浪被限流时只剩腾讯的 aStock，
+                # 缺科创板与北交所）。先用本地日线缓存把缺口补上，再截取数量。
+                metas = self._supplement_from_cache(list(metas))
+                metas = self._rank_and_limit(metas)
                 self._universe = metas
                 self._universe_at = time.time()
                 self._universe_source = source_name
@@ -429,6 +439,58 @@ class ResilientProvider(BaseProvider):
             {name: sum(1 for m in picked if m.board == name) for name in order},
         )
         return picked
+
+    def _supplement_from_cache(self, metas: list[StockMeta]) -> list[StockMeta]:
+        """用日线缓存中已有的代码补全股票池的板块缺口。
+
+        为什么需要：股票列表来自上游接口，而上游可能**暂时拿不到某个板块**
+        （实测新浪列表被反爬限流时，只剩腾讯的 aStock，缺科创板与北交所）。
+        但此时本地日线缓存里往往已经有这些板块的数据 ——
+        若不补全，就会出现「有数据却因为列表不全而整块板块被漏掉」。
+        策略：只在缺失板块上补充，且每个补进来的代码都必须在缓存里真的有日线，
+        绝不平空捏造股票。板块归属由代码段推导。
+        """
+        have = {m.code for m in metas}
+        present = {m.board for m in metas}
+        missing = [b for b in self.REQUIRED_BOARDS if b not in present]
+        if not missing:
+            return metas
+
+        cached_codes = self.cache.all_codes()
+        if not cached_codes:
+            return metas
+
+        added: dict[str, int] = {b: 0 for b in missing}
+        for code in cached_codes:
+            if code in have:
+                continue
+            board = board_of_code(code)
+            if board not in missing:
+                continue
+            # 只补缓存里确实有足够日线的标的
+            if len(self.cache.get(code, MIN_BARS)) < MIN_BARS:
+                continue
+            metas.append(
+                StockMeta(
+                    code=code,
+                    name=code,
+                    market=market_of_code(code),  # type: ignore[arg-type]
+                    board=board,
+                    industry="未分类",
+                    isSt=False,
+                    limitPct=limit_pct(board, False),
+                )
+            )
+            have.add(code)
+            added[board] += 1
+
+        if any(added.values()):
+            logger.info(
+                "上游列表缺少板块 %s，已用本地日线缓存补全：%s（请等待上游限流恢复以获取真实名称）",
+                "/".join(missing),
+                added,
+            )
+        return metas
 
     # ------------------------------------------------------------------ 股票列表快照
     def _load_universe_snapshot(self) -> list[StockMeta] | None:
