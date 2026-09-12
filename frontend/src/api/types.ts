@@ -210,6 +210,19 @@ export interface HealthData {
   dataSource: DataSource;
   lastSyncAt: string | null;
   universeSize: number;
+  /** 首轮全市场扫描是否已完成；未完成时重接口慢属正常（预热中） */
+  scanReady?: boolean;
+  /** 后端进程常驻内存（MB）；用于判断是否接近 OOM */
+  memoryMB?: number | null;
+  /** 数据源可用性概览 */
+  sources?: {
+    total: number;
+    usable: string[];
+    skipped: string[];
+    /** 所有真实源都被跳过 —— 此时取不到任何真实行情 */
+    allSkipped: boolean;
+  };
+  dataSourceMode?: string;
 }
 
 export interface Sentiment {

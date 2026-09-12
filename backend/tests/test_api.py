@@ -25,13 +25,28 @@ def test_health(client):
     resp = client.get(f"{API}/health")
     assert resp.status_code == 200
     data = resp.json()
-    assert set(data) == {"status", "version", "uptimeSeconds", "dataSource", "lastSyncAt", "universeSize"}
+    # 基础字段必须齐全；后续为便于服务器排障追加了 scanReady / memoryMB /
+    # sources / dataSourceMode，因此这里用「包含」而非「完全相等」断言，
+    # 避免每加一个诊断字段就要改测试。
+    assert {
+        "status",
+        "version",
+        "uptimeSeconds",
+        "dataSource",
+        "lastSyncAt",
+        "universeSize",
+    } <= set(data)
     assert data["status"] == "ok"
     # 与 app/config.py 的 APP_VERSION 保持一致（当前 1.1.0：多源故障转移 + 盘口刷新）
     assert data["version"] == "1.1.0"
     assert data["dataSource"] == "synthetic"
     assert data["universeSize"] == 300
     assert data["uptimeSeconds"] >= 0
+    # 排障字段：即便在没有任何上游请求的测试环境也必须存在且类型正确
+    assert isinstance(data["scanReady"], bool)
+    assert data["memoryMB"] is None or data["memoryMB"] >= 0
+    assert set(data["sources"]) == {"total", "usable", "skipped", "allSkipped"}
+    assert isinstance(data["sources"]["usable"], list)
 
 
 # --------------------------------------------------------------------- 3.2

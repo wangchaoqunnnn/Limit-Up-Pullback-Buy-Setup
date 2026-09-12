@@ -244,6 +244,7 @@ Limit-Up-Pullback-Buy-Setup/
 ├── Dockerfile               多阶段构建
 ├── docker-compose.yml       编排（含可选 https profile）
 ├── deploy.sh / deploy.ps1   一键部署脚本
+├── diagnose.sh              部署自检（502/超时/加载失败的定位工具）
 └── .env.example             环境变量模板
 ```
 

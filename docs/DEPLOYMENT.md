@@ -475,7 +475,7 @@ server {
 | `IMAGE_NAME` | `limit-up-pullback` | 镜像名 |
 | `IMAGE_TAG` | `latest` | 镜像标签，回滚时指定旧标签 |
 | `CONTAINER_NAME` | `limit-up-app` | 容器名 |
-| `DATA_SOURCE_MODE` | `auto` | `auto`：优先东方财富接口，失败自动降级为合成演示数据；`eastmoney`：强制真实数据，失败报错；`synthetic`：强制合成数据，完全离线 |
+| `DATA_SOURCE_MODE` | `auto` | `auto`：按 `DATA_SOURCE_ORDER` 依次尝试真实源，全部不可用才降级为演示数据；`real`：绝不降级，全部真实源失败即报错（HTTP 503，生产推荐）；`eastmoney`/`tencent`/`ths`/`sina`/`yahoo`：强制单一源；`synthetic`：强制合成数据，完全离线 |
 | `CACHE_TTL_SECONDS` | `300` | 行情缓存有效期（秒），降低外部接口压力 |
 | `UNIVERSE_SIZE` | `300` | 合成演示数据的股票数量 |
 | `HTTP_TIMEOUT` | `10` | 外部行情接口超时（秒） |
@@ -734,6 +734,10 @@ curl -v http://127.0.0.1:8000/api/v1/health    # ⑤ 本机连通性
 ss -lntp | grep 8000                           # ⑥ 端口监听
 ```
 
+> **更省事的做法**：直接运行 `./diagnose.sh`，它把上面六步连同内存、OOM 记录、
+> 「对外端口到底是谁在监听」一起检查完，并在末尾给出结论。
+> 遇到「502」「全站加载失败」请直接看 [14.3](#143-502--请求超时--全站加载失败)。
+
 ### 14.2 常见问题
 
 | 现象 | 原因 | 解决 |
@@ -750,7 +754,111 @@ ss -lntp | grep 8000                           # ⑥ 端口监听
 | 镜像构建卡在 `npm ci` | npm 源缓慢 | 在 `frontend/.npmrc` 配置国内源（如 `registry=https://registry.npmmirror.com`） |
 | 修改 `.env` 不生效 | 环境变量在容器创建时注入 | `docker compose up -d --force-recreate` |
 
-### 14.3 彻底重置（数据会丢失）
+### 14.3 502 / 请求超时 / 全站加载失败
+
+部署完成后打开页面，如果出现「数据加载失败」「请求超时（15 秒）」或「服务器异常（HTTP 502）」，
+**先在服务器上运行自检脚本**，它会一次性打印定位问题所需的全部信息：
+
+```bash
+cd <项目目录>
+./diagnose.sh                 # 自动读取同目录 .env
+./diagnose.sh --port 8080     # 端口不是默认值时手动指定
+```
+
+#### 14.3.1 先分清「502」和「超时」——性质完全不同
+
+| 现象 | 含义 | 问题出在哪 |
+|---|---|---|
+| **HTTP 502 Bad Gateway** | 前置代理**连不上后端**（连接被拒/无法解析） | **代理层到后端之间**，不是应用代码 |
+| **HTTP 504 / 请求超时** | 后端在处理，但太久没返回 | 后端太慢（多为全市场首轮预热未完成） |
+| **HTTP 503** | 后端正常响应，但真实数据源全不可用 | `DATA_SOURCE_MODE=real` 时的预期行为 |
+
+> **关键事实：本项目后端从不返回 502。** 它只会返回 200 / 4xx 及 500（内部错误）、503（数据源不可用）。
+> 因此**只要看到 502，就一定有一层反向代理（Nginx / 宝塔 / Caddy / 云厂商网关）在你和容器之间**，
+> 而它没能把请求转发到容器。这是本项目采用「单容器同源部署」时最容易被忽略的一环：
+> 镜像内部没有 Nginx，对外端口本应由 Docker 直接映射。
+
+#### 14.3.2 三种典型情况与处理
+
+**情况 A：容器没在运行（代理自然返回 502）**
+
+```bash
+docker ps -a | grep limit-up-app          # 看 STATUS 是否为 Up
+docker logs --tail 100 limit-up-app       # 看启动报错
+```
+
+若 `STATUS` 显示 `Restarting` 或退出码非 0，多为**内存不足被系统杀掉**（全市场约 5500 只，
+峰值内存数百 MB，小规格云主机容易触发）。处理：
+
+```bash
+# 1) 加 swap（最有效，成本最低）
+sudo fallocate -l 2G /swapfile && sudo chmod 600 /swapfile
+sudo mkswap /swapfile && sudo swapon /swapfile
+echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+
+# 2) 或调小股票池规模后重启（先跑起来，再逐步放大）
+sed -i 's/^UNIVERSE_SIZE=.*/UNIVERSE_SIZE=1500/' .env
+./deploy.sh
+```
+
+确认是否真被 OOM：`dmesg | grep -i 'killed process'`（需 sudo）。
+
+**情况 B：端口被另一层服务占用（对外看到的其实不是本容器）**
+
+```bash
+ss -lntp | grep ':8000'      # 看监听进程是 docker-proxy 还是 nginx/openresty
+curl -sI http://127.0.0.1:8000/api/v1/health | grep -i '^server:'
+```
+
+- 显示 `docker-proxy` / `server: uvicorn` → 直达容器，正常；
+- 显示 `nginx` / `openresty` → **前面确实有代理**，502 由它产生。检查它的 `proxy_pass`
+  是否指向容器实际暴露的宿主机端口（即 `.env` 里的 `HOST_PORT`），而不是写死的 `8000`：
+
+```bash
+grep -n 'proxy_pass' /etc/nginx/conf.d/*.conf /etc/nginx/sites-enabled/* 2>/dev/null
+docker port limit-up-app        # 核对容器真正映射出的宿主机端口
+```
+
+宝塔面板用户：在「网站 → 反向代理」里把目标 URL 改成 `http://127.0.0.1:<HOST_PORT>`。
+
+**情况 C：后端正常，只是首轮行情还没预热完**
+
+全市场首次取数需要**数分钟**（本地实测 8 分钟，云主机更久），期间重接口必然很慢。
+判断方法：
+
+```bash
+curl -s http://127.0.0.1:8000/api/v1/health
+# "scanReady": false  → 预热中，属正常
+# "scanReady": true   → 已就绪，此时仍失败才是真故障
+# "memoryMB": 350     → 可据此判断是否接近内存上限
+# "sources": {"usable": ["tencent","ths","sina"], "allSkipped": false}
+```
+
+前端已按接口重量分级设置超时（重接口 180 秒），因此**预热期不再是「全站加载失败」**，
+耐心等待首轮完成即可。想加速可先缩小股票池：
+
+```bash
+sed -i 's/^UNIVERSE_SIZE=.*/UNIVERSE_SIZE=1000/' .env && ./deploy.sh
+```
+
+#### 14.3.3 一键收集排障信息
+
+```bash
+{
+  echo "== 容器 ==";   docker ps -a --filter name=limit-up-app
+  echo "== 端口 ==";   ss -lntp | grep ':8000'
+  echo "== 容器内 =="; docker exec limit-up-app curl -s http://127.0.0.1:8000/api/v1/health
+  echo "== 宿主 ==";   curl -s http://127.0.0.1:8000/api/v1/health
+  echo "== 日志 ==";   docker logs --tail 80 limit-up-app 2>&1
+  echo "== 内存 ==";   free -h
+} 2>&1 | tee diagnose-$(date +%Y%m%d%H%M).log
+```
+
+`./diagnose.sh` 已把上述检查与自动结论整合在一起，推荐直接用它。
+
+---
+
+### 14.4 彻底重置（数据会丢失）
 
 ```bash
 docker compose down -v --remove-orphans
