@@ -196,16 +196,29 @@ fi
 
 sec "6. 从容器内部访问后端（绕开一切代理，直连应用）"
 if docker info >/dev/null 2>&1 && [ -n "${running:-}" ]; then
-  out=$(docker exec "$CONTAINER" curl -s -o /dev/null -w '%{http_code}' \
-        --max-time 12 "http://127.0.0.1:${APP_PORT}/api/v1/health" 2>/dev/null) \
-    || out=""
-  if [ "$out" = "200" ]; then
+  # 镜像里**没有 curl**（为摆脱 Linux 软件源依赖而刻意移除），
+  # 因此优先用镜像自带的 healthcheck.py 脚本；镜像较旧时才退回 curl。
+  body=""
+  code=""
+  if docker exec "$CONTAINER" python healthcheck.py >/tmp/_diag_body 2>/dev/null; then
+    code="200"
+    body=$(cat /tmp/_diag_body 2>/dev/null)
+  else
+    code=$(docker exec "$CONTAINER" curl -s -o /dev/null -w '%{http_code}' \
+           --max-time 12 "http://127.0.0.1:${APP_PORT}/api/v1/health" 2>/dev/null) || code=""
+    if [ -n "$code" ]; then
+      body=$(docker exec "$CONTAINER" curl -s --max-time 12 \
+             "http://127.0.0.1:${APP_PORT}/api/v1/health" 2>/dev/null)
+    fi
+  fi
+  rm -f /tmp/_diag_body
+  if [ "$code" = "200" ]; then
     ok "容器内 /api/v1/health = 200 → 后端本身健康"
     info "若第 5 步失败而本步成功，则问题 100% 在「宿主机端口映射或前置代理」，不在应用。"
-    info "容器内响应体：$(docker exec "$CONTAINER" curl -s --max-time 12 "http://127.0.0.1:${APP_PORT}/api/v1/health" 2>/dev/null)"
+    info "容器内响应体：${body}"
   else
-    bad "容器内 /api/v1/health 返回「${out:-无响应}」→ 后端未就绪或已崩溃"
-    info "请查看第 3 步日志；常见原因：内存不足被杀、上游数据源全部不可达、依赖安装不完整。"
+    bad "容器内 /api/v1/health 返回「${code:-无响应}」→ 后端未就绪或已崩溃"
+    info "请查看第 3 步日志；常见原因：内存不足被杀（看第 7、8 步）、上游数据源全部不可达。"
   fi
 else
   warn "容器未运行，跳过"

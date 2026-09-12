@@ -284,7 +284,7 @@ print_access() {
       synthetic)
         warn "生效数据源  : synthetic（内置演示数据）"
         warn "  说明：全部真实行情源当前不可达，已自动降级。"
-        warn "  排查：docker compose exec app curl -sI https://qt.gtimg.cn/q=sh600519"
+        warn "  排查：docker compose exec app python healthcheck.py（镜像内已无 curl）"
         ;;
       *)
         ok "生效数据源  : ${active}（真实行情）"
@@ -315,7 +315,8 @@ print_access() {
         warn "功能自检    : 运行的仍是**旧版**后端（/health 缺少 scanReady 字段）"
         warn "  说明：镜像没有真正更新，新功能不会生效。请确认："
         warn "    1) git pull 是否成功：git log --oneline -1"
-        warn "    2) 强制重建：${COMPOSE_CMD[*]} -f $COMPOSE_FILE build --no-cache app"
+        warn "    2) 确认代码已更新后重建：${COMPOSE_CMD[*]} -f $COMPOSE_FILE build app"
+        warn "       （--no-cache 会重跑 pip/npm 全量下载，弱网下易失败，非必要不用）"
         warn "    3) 再执行 ./deploy.sh"
         ;;
     esac
@@ -385,8 +386,8 @@ build_and_up() {
     warn "镜像未发生变化（ID 相同，全部命中构建缓存）→ 本次部署很可能没有换新代码"
     warn "若你刚拉取了新代码，请先确认 git 拉取成功："
     warn "    git -C . log --oneline -1 && git -C . status --short"
-    warn "确实已是最新代码却仍如此，可强制重建："
-    warn "    ${COMPOSE_CMD[*]} -f $COMPOSE_FILE build --no-cache app && ./deploy.sh"
+    warn "确认代码确实已是最新后仍如此，才需要重建（会重跑依赖下载，弱网下较慢）："
+    warn "    ${COMPOSE_CMD[*]} -f $COMPOSE_FILE build app && ./deploy.sh"
   fi
   if [ -n "$before_started" ] && [ "$before_started" = "$after_started" ]; then
     # 容器未重建时，**环境变量与镜像都不会更新**（docker 只在创建时注入）

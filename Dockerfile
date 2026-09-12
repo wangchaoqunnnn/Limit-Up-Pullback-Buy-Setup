@@ -21,9 +21,23 @@ ARG TARGETPLATFORM
 # ---------------------------------------------------------------------------
 FROM --platform=${TARGETPLATFORM} node:20-alpine AS frontend-builder
 
-# npm 镜像源：国内服务器直连 registry.npmjs.org 会极慢甚至超时
+# npm 镜像源与弱网重试策略（关键）：
+#   国内服务器直连 registry.npmjs.org 会极慢甚至超时；
+#   而即使指向国内镜像，弱网下仍可能出现 ECONNRESET（实测 npm ci 跑了
+#   672 秒后报 `npm error network read ECONNRESET`，整次构建失败）。
+#   因此除了换源，还必须显式放宽重试与超时，并**降低并发连接数**
+#   （并发 socket 过多是弱网下被重置的常见原因）：
+#     fetch-retries=6、单次重试上限 3 分钟、整体超时 10 分钟、maxsockets=5。
+#   海外服务器可传 --build-arg NPM_REGISTRY=https://registry.npmjs.org 覆盖。
 ARG NPM_REGISTRY=https://registry.npmmirror.com
-ENV NPM_CONFIG_REGISTRY=${NPM_REGISTRY}
+ENV NPM_CONFIG_REGISTRY=${NPM_REGISTRY} \
+    NPM_CONFIG_FETCH_RETRIES=6 \
+    NPM_CONFIG_FETCH_RETRY_MINTIMEOUT=20000 \
+    NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT=180000 \
+    NPM_CONFIG_FETCH_TIMEOUT=600000 \
+    NPM_CONFIG_MAXSOCKETS=5 \
+    NPM_CONFIG_AUDIT=false \
+    NPM_CONFIG_FUND=false
 
 WORKDIR /build/frontend
 
@@ -76,12 +90,13 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# 时区与健康检查所需的最小运行时依赖
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends tzdata curl ca-certificates \
-    && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime \
-    && echo $TZ > /etc/timezone \
-    && rm -rf /var/lib/apt/lists/*
+# 注意：这里**刻意不做 apt-get**。
+# 实测：原先为了装 curl 而执行 `apt-get update && apt-get install curl`，
+# 在部分国内服务器上仅这一步就要 **673 秒**，而且软件源 DNS 抖动 / ECONNRESET
+# 会直接让整个镜像构建失败（这类失败与代码无关，却最难排查）。
+# 实测 `python:3.12-slim` 已经自带 ca-certificates（150 个根证书）与系统 tzdata
+# （`zoneinfo.ZoneInfo("Asia/Shanghai")` 可用），唯一缺的 curl 由标准库脚本
+# backend/healthcheck.py 替代 —— 于是构建流程里不再有任何 Linux 软件源依赖。
 
 # 后端依赖（单独一层，便于缓存）
 COPY backend/requirements.txt ./backend/requirements.txt
@@ -132,7 +147,8 @@ EXPOSE 8000
 
 # 健康检查（/api/v1/health 不套统一信封，专门用于探针）。
 # start-period 放宽到 60s：全市场首轮行情拉取需要数分钟，期间接口可能尚未就绪。
+# 用标准库脚本而非 curl：镜像里不再安装 curl（见上方说明）。
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=5 \
-    CMD curl -fsS "http://127.0.0.1:${APP_PORT}/api/v1/health" || exit 1
+    CMD ["python", "healthcheck.py"]
 
 CMD ["sh", "-c", "python -m uvicorn app.main:app --host ${APP_HOST} --port ${APP_PORT} --workers 1 --proxy-headers --forwarded-allow-ips='*'"]

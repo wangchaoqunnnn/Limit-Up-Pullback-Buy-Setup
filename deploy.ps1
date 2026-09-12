@@ -266,7 +266,7 @@ function Show-Access {
         }
         else {
             Write-Warn2 '功能自检    : 运行的仍是旧版后端（/health 缺少 scanReady 字段）'
-            Write-Warn2 '  说明：镜像没有真正更新。请确认 git pull 成功，并执行 docker compose build --no-cache app'
+            Write-Warn2 '  说明：镜像没有真正更新。请先确认 git pull 成功（git log --oneline -1），再执行 docker compose build app'
         }
     }
     catch { }
@@ -324,7 +324,7 @@ function Start-Deployment {
     if ($beforeImage -and $beforeImage -eq $afterImage) {
         Write-Warn2 '镜像未发生变化（ID 相同，全部命中构建缓存）→ 本次部署很可能没有换新代码'
         Write-Warn2 '  请确认 git pull 成功：git log --oneline -1'
-        Write-Warn2 '  确实已是最新代码仍如此时，强制重建：docker compose build --no-cache app'
+        Write-Warn2 '  确认代码已是最新后仍如此时，再重建：docker compose build app'
     }
     if ($beforeStarted -and $beforeStarted -eq $afterStarted) {
         Write-Warn2 '容器未重建（启动时间未变化）→ .env 的改动与本次镜像都不会生效'

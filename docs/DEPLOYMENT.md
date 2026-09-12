@@ -320,6 +320,12 @@ docker compose up -d --no-build      # 直接用已导入的镜像，不再构�
 docker buildx build --platform linux/amd64 -t limit-up-pullback:latest --load .
 ```
 
+> **关于 `--no-cache`（重要）**：它会强制重跑**全部**构建层，包含 pip 与 npm 的
+> 依赖下载 —— 在弱网/国内网络上，这正是构建失败的主要来源（实测 `npm ci` 跑了
+> 672 秒后报 ECONNRESET）。**代码更新后的正常构建不需要它**：源码变了，
+> `COPY` 层会自动失效并重建；而依赖层（`package.json` / `requirements.txt` 未变时）
+> 会正确复用缓存。只有当「代码确实已更新、镜像却依旧不变」时才值得动用它。
+
 #### 若构建仍然失败
 
 `exit code 2` 只是 pip 的退出码，**真正原因在它上面的日志里**。定位方法：
@@ -336,6 +342,8 @@ grep -nE 'ERROR|ReadTimeout|Could not find|No matching distribution|Downloading 
 | 日志特征 | 原因 | 对策 |
 |---|---|---|
 | `ReadTimeoutError ... files.pythonhosted.org` | PyPI 网络超时 | 已默认走国内镜像；确认 `.env` 未被改成官方源 |
+| `npm error network read ECONNRESET`（常伴 600 秒以上耗时） | npm 源在弱网下被重置 | **不要加 `--no-cache`**（会把 apt/npm 全量重跑）；已内置 6 次重试、10 分钟超时与 `maxsockets=5` 降并发 |
+| 构建卡在 `apt-get update` 数百秒 | 访问 Debian 软件源缓慢（实测 673 秒） | 已**彻底移除 apt 层**：健康检查改用标准库脚本，镜像不再依赖任何 Linux 软件源 |
 | `Could not find a version that satisfies` | Python 版本不匹配 | 本项目要求 Python 3.12（镜像已固定） |
 | `No matching distribution ... for cp312` | 平台无对应 wheel | 检查是否跨架构（见上方 arm64 说明） |
 | `/bin/sh: gcc: not found` | 需源码编译但无编译器 | 极少数情况；可 `apt-get install build-essential python3-dev` |
@@ -589,7 +597,8 @@ cd /opt/Limit-Up-Pullback-Buy-Setup
 
 ```bash
 git pull
-docker compose build --no-cache app
+git log --oneline -1          # 确认代码确实更新了
+docker compose build app      # 不加 --no-cache：依赖层可复用，弱网下更稳
 docker compose up -d --remove-orphans
 ```
 
@@ -751,7 +760,7 @@ ss -lntp | grep 8000                           # ⑥ 端口监听
 | `port is already allocated` | 端口被占用 | `ss -lntp \| grep 8000` 找到占用进程；或 `./deploy.sh --port 8080` 换端口 |
 | 本机 `curl` 正常，浏览器打不开 | 云安全组未放行 | 控制台入方向放行 `HOST_PORT/tcp` |
 | 健康检查一直不通过 | 启动期数据抓取较慢 / 依赖缺失 | `./deploy.sh --logs` 查日志；将 `DATA_SOURCE_MODE` 设为 `synthetic` 排除外网因素 |
-| 页面 404 / 只返回 JSON 提示 | 前端产物未构建进镜像 | 确认 `frontend/dist/index.html` 存在；`docker compose build --no-cache app` |
+| 页面 404 / 只返回 JSON 提示 | 前端产物未构建进镜像 | 确认 `frontend/dist/index.html` 存在；`docker compose build app` |
 | 数据源显示 `synthetic` | 外网不可达或接口超时 | 检查服务器出网与 DNS；调大 `HTTP_TIMEOUT`；或接受演示数据 |
 | 内存不足 OOM 被杀 | 前端构建阶段峰值内存高 | 临时加 swap；或采用[离线部署](#12-离线内网部署)在本地构建镜像 |
 | 扫描很慢 / 超时 | 首次全市场抓取无缓存 | 等待首轮完成（后续走缓存）；调大 `CACHE_TTL_SECONDS`；或减小 `UNIVERSE_SIZE` |
@@ -944,7 +953,7 @@ sed -i 's/^UNIVERSE_SIZE=.*/UNIVERSE_SIZE=1000/' .env && ./deploy.sh
 {
   echo "== 容器 ==";   docker ps -a --filter name=limit-up-app
   echo "== 端口 ==";   ss -lntp | grep ':8000'
-  echo "== 容器内 =="; docker exec limit-up-app curl -s http://127.0.0.1:8000/api/v1/health
+  echo "== 容器内 =="; docker exec limit-up-app python healthcheck.py    # 镜像内无 curl，用内置脚本
   echo "== 宿主 ==";   curl -s http://127.0.0.1:8000/api/v1/health
   echo "== 日志 ==";   docker logs --tail 80 limit-up-app 2>&1
   echo "== 内存 ==";   free -h
