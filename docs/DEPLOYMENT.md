@@ -758,7 +758,7 @@ ss -lntp | grep 8000                           # ⑥ 端口监听
 |---|---|---|
 | `Cannot connect to the Docker daemon` | Docker 未启动或无权限 | `sudo systemctl start docker`；或 `sudo usermod -aG docker $USER` 后重新登录 |
 | `port is already allocated` | 端口被占用 | `ss -lntp \| grep 8000` 找到占用进程；或 `./deploy.sh --port 8080` 换端口 |
-| 本机 `curl` 正常，浏览器打不开 | 云安全组未放行 | 控制台入方向放行 `HOST_PORT/tcp` |
+| 本机 `curl` 正常，浏览器打不开 | **云安全组未放行**（最常见，占绝大多数） | `sh diagnose.sh` 看第 9 节；控制台入方向放行 `HOST_PORT/tcp`（源 `0.0.0.0/0`） |
 | 健康检查一直不通过 | 启动期数据抓取较慢 / 依赖缺失 | `./deploy.sh --logs` 查日志；将 `DATA_SOURCE_MODE` 设为 `synthetic` 排除外网因素 |
 | 页面 404 / 只返回 JSON 提示 | 前端产物未构建进镜像 | 确认 `frontend/dist/index.html` 存在；`docker compose build app` |
 | 数据源显示 `synthetic` | 外网不可达或接口超时 | 检查服务器出网与 DNS；调大 `HTTP_TIMEOUT`；或接受演示数据 |
@@ -810,7 +810,27 @@ sh diagnose.sh --port 8080    # 端口不是默认值时手动指定
 > 而它没能把请求转发到容器。这是本项目采用「单容器同源部署」时最容易被忽略的一环：
 > 镜像内部没有 Nginx，对外端口本应由 Docker 直接映射。
 
-#### 14.3.2 三种典型情况与处理
+#### 14.3.2 浏览器打不开但服务器内部正常（最常见）
+
+`sh diagnose.sh` 第 9 节会**从服务器自身访问公网 IP**，一步区分是「网络链路被拦」还是「服务没起来」：
+
+| 第 9 节结果 | 含义 | 处理 |
+|---|---|---|
+| `公网访问 … 正常`（200） | 服务端与链路都没问题 | 客户端问题：本机代理/VPN、浏览器强制 HTTPS、缓存。**用手机流量（不连 WiFi）复测** |
+| 超时 / 连接被拒 | **云安全组未放行**该端口 | 控制台 → 安全组（华为云也可能叫「防火墙」）→ 入方向 → 添加 `TCP <端口>`、源 `0.0.0.0/0` |
+| 返回非 200 | 端口通但服务异常 | 结合第 3 步日志与第 6 步响应判断 |
+
+手动探测（把 IP 换成你的公网 IP；`--public-ip` 用于自动识别失败时手动指定）：
+
+```bash
+sh diagnose.sh --public-ip 203.0.113.10
+# 或直接在服务器上执行
+curl -sI --max-time 10 http://203.0.113.10:8000/api/v1/health
+```
+
+> 提醒：云安全组**必须手动配置**，脚本无法代劳。本机防火墙（ufw/firewalld）脚本会自动尝试放行，第 9 节会打印其状态。
+
+#### 14.3.3 三种典型情况与处理
 
 **情况 D：首屏很慢或大面积超时（后端正常时的性能问题）**
 
@@ -836,7 +856,7 @@ curl -s http://127.0.0.1:8000/api/v1/health | grep -o '"scanReady":[a-z]*'
 > 1GB 内存的机器建议把 `UNIVERSE_SIZE` 设为 1500~3000，或把
 > `KLINE_MEMORY_CACHE_SECONDS=0` 关掉内存缓存（以速度换内存）。
 
-#### 14.3.3 小内存服务器：被 OOM 杀掉是「最难查」的故障
+#### 14.3.4 小内存服务器：被 OOM 杀掉是「最难查」的故障
 
 **实测案例**：一台 1.73GB 内存、**无 swap**、可用内存只剩 0.34GB 的云主机，
 部署后表现为「所有数据加载失败 / 502 / 时好时坏」。查 `dmesg` 才能看到真相：
@@ -948,7 +968,7 @@ curl -s http://127.0.0.1:8000/api/v1/health
 sed -i 's/^UNIVERSE_SIZE=.*/UNIVERSE_SIZE=1000/' .env && ./deploy.sh
 ```
 
-#### 14.3.3 一键收集排障信息
+#### 14.3.5 一键收集排障信息
 
 ```bash
 {

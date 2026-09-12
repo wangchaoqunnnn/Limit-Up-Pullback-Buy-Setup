@@ -39,12 +39,14 @@ cd "$SCRIPT_DIR" || exit 1
 # --------------------------------------------------------------------- 参数
 PORT=""
 CONTAINER=""
+OPT_PUBLIC_IP=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --port)      PORT="${2:-}"; shift 2 ;;
     --container) CONTAINER="${2:-}"; shift 2 ;;
+    --public-ip) OPT_PUBLIC_IP="${2:-}"; shift 2 ;;
     -h|--help)   sed -n '2,25p' "$0"; exit 0 ;;
-    *)           printf '未知参数：%s（可用 --port / --container）\n' "$1"; exit 2 ;;
+    *)           printf '未知参数：%s（可用 --port / --container / --public-ip）\n' "$1"; exit 2 ;;
   esac
 done
 
@@ -269,6 +271,61 @@ else
 fi
 
 # --------------------------------------------------------------------- 结论
+sec "9. 公网可达性（浏览器打不开时看这一节）"
+# 关键区分：服务端内部 200 正常、但浏览器打不开，绝大多数是**云安全组没放行**。
+# 这一步从服务器自身访问「公网 IP:端口」——若被拦，说明链路在安全组/防火墙处。
+PUBLIC_IP="${OPT_PUBLIC_IP:-}"
+if [ -z "$PUBLIC_IP" ] && command -v curl >/dev/null 2>&1; then
+  for probe_url in https://ifconfig.me https://api.ipify.org https://ipinfo.io/ip; do
+    PUBLIC_IP=$(curl -s --max-time 6 "$probe_url" 2>/dev/null | tr -d '\r\n ')
+    case "$PUBLIC_IP" in
+      *[!0-9.]*|'') PUBLIC_IP="" ;;
+      *) break ;;
+    esac
+  done
+fi
+
+if command -v curl >/dev/null 2>&1; then
+  if [ -n "$PUBLIC_IP" ]; then
+    info "服务器公网 IP：$PUBLIC_IP"
+    pub_code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 12 \
+               "http://${PUBLIC_IP}:${PORT}/api/v1/health" 2>/dev/null) || pub_code=""
+    if [ "$pub_code" = "200" ]; then
+      ok "公网访问 http://${PUBLIC_IP}:${PORT}/ 正常 → 服务端与网络链路都没问题"
+      info "若浏览器仍打不开：多为客户端问题（本机代理/VPN、浏览器强制 HTTPS、缓存），"
+      info "请用手机流量（不连 WiFi）访问同一地址复测。"
+    elif [ -z "$pub_code" ]; then
+      bad "从公网访问超时或连接被拒 → **极可能是云安全组未放行 ${PORT}/tcp**"
+      info "请到云控制台配置【入方向】规则：协议 TCP、端口 ${PORT}、源 0.0.0.0/0"
+      info "  华为云：控制台 → 云耀云服务器/ECS → 安全组（或「防火墙」）→ 添加入方向规则"
+      info "  阿里云/腾讯云：控制台 → 安全组 → 入方向 → 添加 TCP ${PORT}"
+      info "再对照本节下方的本机防火墙状态，确认两处都放行。"
+    else
+      warn "从公网访问返回 HTTP ${pub_code}（非 200）→ 端口通但有异常，请结合第 3、6 步判断"
+    fi
+  else
+    warn "未能识别公网 IP，跳过自动探测。可手动指定：sh diagnose.sh --public-ip <你的公网IP>"
+  fi
+else
+  warn "无 curl，无法探测公网可达性"
+fi
+
+info "本机防火墙状态："
+if command -v ufw >/dev/null 2>&1; then
+  ufw_status=$(ufw status 2>/dev/null | head -n 1)
+  info "  ufw: ${ufw_status:-未知}（放行：sudo ufw allow ${PORT}/tcp）"
+fi
+if command -v firewall-cmd >/dev/null 2>&1; then
+  info "  firewalld: $(firewall-cmd --state 2>/dev/null || echo '未运行')（放行：sudo firewall-cmd --permanent --add-port=${PORT}/tcp && sudo firewall-cmd --reload）"
+fi
+if command -v iptables >/dev/null 2>&1; then
+  blocked=$(iptables -S 2>/dev/null | grep -cE "DROP|REJECT" || true)
+  info "  iptables: 含 ${blocked} 条 DROP/REJECT 规则（有 DROP 时需确认未误拦 ${PORT}）"
+fi
+if ! command -v ufw >/dev/null 2>&1 && ! command -v firewall-cmd >/dev/null 2>&1; then
+  info "  未检测到 ufw / firewalld（可能未启用本机防火墙）"
+fi
+
 sec "结论速查"
 cat <<'EOF'
   把上面的结果对照下表即可定位：
