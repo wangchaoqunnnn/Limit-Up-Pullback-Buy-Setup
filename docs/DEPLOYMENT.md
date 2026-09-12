@@ -769,6 +769,7 @@ ss -lntp | grep 8000                           # ⑥ 端口监听
 | 修改 `.env` 不生效 | 环境变量在容器创建时注入 | `docker compose up -d --force-recreate` |
 | `./diagnose.sh: No such file or directory` | 服务器上的克隆不是最新代码（旧提交里没有该脚本） | `git fetch origin && git pull --ff-only`；或被拒时 `git checkout origin/main -- diagnose.sh` |
 | `./diagnose.sh: Permission denied` | 可执行位丢失（从 Windows 拷贝等） | 用 `sh diagnose.sh`，或 `chmod +x diagnose.sh` |
+| `fallocate: fallocate failed: Text file busy` | `/swapfile` **已经是在用的 swap 文件**（内核对 swap 文件拒绝 fallocate，返回 ETXTBSY），并非故障 | 说明 swap 已建好：用 `swapon --show` / `free -h` 确认，然后只需保证开机自动挂载：`grep -q /swapfile /etc/fstab \|\| echo '/swapfile none swap sw 0 0' \| sudo tee -a /etc/fstab` |
 
 ### 14.3 502 / 请求超时 / 全站加载失败
 
