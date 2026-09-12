@@ -295,6 +295,32 @@ print_access() {
   echo
   echo "  刷新策略    : 开盘期间每 $(env_get REFRESH_INTERVAL_SECONDS 2>/dev/null || echo 30) 秒自动刷新"
   echo "  股票池规模  : $(env_get UNIVERSE_SIZE 2>/dev/null || echo 1000) 只"
+  # 让用户一眼看清「线上跑的到底是哪份代码」——
+  # 实测踩过的坑：忘记 git pull 时脚本仍打印「部署完成」，用户以为修复已上线。
+  echo "  代码版本    : $(current_revision)"
+  local img; img="$(current_image_id)"
+  if [ -n "$img" ]; then
+    echo "  运行镜像    : $(printf '%s' "${img#sha256:}" | cut -c1-12)"
+  fi
+
+  # 功能自检：新版 /health 才有 scanReady / memoryMB 字段。
+  # 缺少它们说明容器里跑的仍是旧镜像，这是「我一部署了修复却没生效」的直接证据。
+  local probe
+  probe="$(curl -fsS --max-time 5 "http://127.0.0.1:${port}/api/v1/health" 2>/dev/null || true)"
+  if [ -n "$probe" ]; then
+    case "$probe" in
+      *scanReady*)
+        ok "功能自检    : 已运行最新版后端（含 scanReady / memoryMB 等排障字段）" ;;
+      *)
+        warn "功能自检    : 运行的仍是**旧版**后端（/health 缺少 scanReady 字段）"
+        warn "  说明：镜像没有真正更新，新功能不会生效。请确认："
+        warn "    1) git pull 是否成功：git log --oneline -1"
+        warn "    2) 强制重建：${COMPOSE_CMD[*]} -f $COMPOSE_FILE build --no-cache app"
+        warn "    3) 再执行 ./deploy.sh"
+        ;;
+    esac
+  fi
+
   echo "  常用命令    : ./deploy.sh --logs | --status | --update | --stop"
   echo "  完整部署文档: docs/DEPLOYMENT.md"
   title "=============================================="
@@ -342,8 +368,31 @@ build_and_up() {
     open_firewall "$HOST_PORT_RESOLVED"
   fi
 
+  # 记录构建前后的镜像 ID 与容器状态，用于判断「这次到底有没有真的更新」。
+  # 实测踩过的坑：代码没更新（忘记 git pull）时，Docker 全部命中缓存，
+  # 容器也不会重建，脚本却照样打印「部署完成」，让人误以为修复已上线。
+  local before_image after_image before_started after_started
+  before_image="$(current_image_id)"
+  before_started="$(current_container_started)"
+
   title ">>> 构建镜像与启动容器"
   "${COMPOSE_CMD[@]}" -f "$COMPOSE_FILE" "${profile_args[@]}" up -d --build --remove-orphans
+
+  after_image="$(current_image_id)"
+  after_started="$(current_container_started)"
+
+  if [ -n "$before_image" ] && [ "$before_image" = "$after_image" ]; then
+    warn "镜像未发生变化（ID 相同，全部命中构建缓存）→ 本次部署很可能没有换新代码"
+    warn "若你刚拉取了新代码，请先确认 git 拉取成功："
+    warn "    git -C . log --oneline -1 && git -C . status --short"
+    warn "确实已是最新代码却仍如此，可强制重建："
+    warn "    ${COMPOSE_CMD[*]} -f $COMPOSE_FILE build --no-cache app && ./deploy.sh"
+  fi
+  if [ -n "$before_started" ] && [ "$before_started" = "$after_started" ]; then
+    # 容器未重建时，**环境变量与镜像都不会更新**（docker 只在创建时注入）
+    warn "容器未重建（启动时间未变化）→ .env 的改动与本次镜像都不会生效"
+    warn "需要重建时执行：${COMPOSE_CMD[*]} -f $COMPOSE_FILE up -d --force-recreate"
+  fi
 
   title ">>> 等待服务启动"
   if wait_healthy "$HOST_PORT_RESOLVED"; then
@@ -352,6 +401,21 @@ build_and_up() {
     warn "服务可能仍在初始化。查看日志：./deploy.sh --logs"
     exit 1
   fi
+}
+
+# 当前 app 容器使用的镜像 ID（不存在时输出空）
+current_image_id() {
+  docker image inspect --format '{{.Id}}' "${IMAGE_NAME:-limit-up-pullback}:${IMAGE_TAG:-latest}" 2>/dev/null || true
+}
+
+# 当前 app 容器的启动时间（未运行时输出空）
+current_container_started() {
+  docker inspect --format '{{.State.StartedAt}}' "${CONTAINER_NAME:-limit-up-app}" 2>/dev/null || true
+}
+
+# 当前部署的代码版本（非 git 目录时输出「未知」）
+current_revision() {
+  git -C . rev-parse --short HEAD 2>/dev/null || echo "未知（非 git 目录）"
 }
 
 action_deploy() {

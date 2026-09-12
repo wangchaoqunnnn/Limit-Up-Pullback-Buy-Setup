@@ -483,3 +483,47 @@ class TestCodeHelpers:
         meta = make_meta("600001", "ST示例")
         assert meta.isSt is True
         assert meta.limitPct == pytest.approx(0.05)
+
+
+# --------------------------------------------------------------------- 资产编码
+# 以下用例锁定一类**反复踩到、且症状极具误导性**的缺陷：文本资产的编码/行尾。
+# 实测踩坑记录：
+#   1) deploy.ps1 若不带 UTF-8 BOM，Windows PowerShell 5.1 会按 GBK 解码其中的中文，
+#      乱码字符会“吃掉”紧跟其后的引号 → 报「The string is missing the terminator」，
+#      看起来像语法错误，实际是编码问题；
+#   2) .sh / Dockerfile 若带 BOM 或 CRLF，在 Linux 上会分别报
+#      「bad interpreter」与「$'\r': command not found」，部署直接失败。
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+class TestScriptEncoding:
+    """部署脚本与容器构建文件的编码必须正确（跨平台硬约束）。"""
+
+    def test_deploy_ps1_has_utf8_bom(self):
+        """deploy.ps1 必须带 UTF-8 BOM：否则 PowerShell 5.1 按 GBK 读中文导致语法错。"""
+        raw = (REPO_ROOT / "deploy.ps1").read_bytes()
+        assert raw[:3] == b"\xef\xbb\xbf", (
+            "deploy.ps1 缺少 UTF-8 BOM。Windows PowerShell 5.1 会把无 BOM 文件按 GBK 解码，"
+            "中文乱码后可能吞掉引号并报「字符串未闭合」。"
+            "修复：python -c \"import pathlib;p=pathlib.Path('deploy.ps1');"
+            "p.write_bytes(b'\\xef\\xbb\\xbf'+p.read_text(encoding='utf-8').encode('utf-8'))\""
+        )
+
+    def test_deploy_ps1_has_no_mojibake(self):
+        """不应出现替换字符：那是「已经用错编码解码过」的痕迹。"""
+        text = (REPO_ROOT / "deploy.ps1").read_text(encoding="utf-8-sig")
+        assert "\ufffd" not in text, "deploy.ps1 含 U+FFFD，说明中文已被错误编码破坏"
+
+    def test_shell_scripts_are_lf_without_bom(self):
+        """.sh 必须是无 BOM 的 LF：BOM 会导致 bad interpreter，CRLF 会导致 $'\\r' 报错。"""
+        for name in ("deploy.sh", "diagnose.sh"):
+            raw = (REPO_ROOT / name).read_bytes()
+            assert not raw.startswith(b"\xef\xbb\xbf"), f"{name} 不应带 BOM"
+            assert b"\r\n" not in raw, f"{name} 必须使用 LF 换行（CRLF 在 Linux 上直接报错）"
+
+    def test_docker_assets_are_lf_without_bom(self):
+        """Dockerfile / compose 同样不能带 BOM 或 CRLF。"""
+        for name in ("Dockerfile", "docker-compose.yml"):
+            raw = (REPO_ROOT / name).read_bytes()
+            assert not raw.startswith(b"\xef\xbb\xbf"), f"{name} 不应带 BOM"
+            assert b"\r\n" not in raw, f"{name} 必须使用 LF 换行"

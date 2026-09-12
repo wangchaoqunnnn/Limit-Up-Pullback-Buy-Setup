@@ -1,4 +1,4 @@
-# =============================================================================
+﻿# =============================================================================
 # 涨停回调低吸战法 —— 一键部署脚本（Windows / PowerShell 5.1+ / PowerShell 7+）
 #
 # 编码要求：本文件必须保存为 UTF-8 with BOM。Windows PowerShell 5.1 读取无 BOM 的
@@ -239,6 +239,38 @@ function Show-Access {
     if (-not [string]::IsNullOrWhiteSpace($d)) { Write-Host "  域名访问    : https://$d" }
     Write-Host ''
     Write-Host "  数据源模式  : $script:ModeResolved"
+    # 让用户一眼看清「线上跑的到底是哪份代码」：
+    # 实测踩过的坑是忘记 git pull 时脚本仍打印「部署完成」，修复其实没上线。
+    $rev = ''
+    try { $rev = (git rev-parse --short HEAD) } catch { $rev = '' }
+    if ([string]::IsNullOrWhiteSpace($rev)) { $rev = '未知（非 git 目录）' }
+    Write-Host "  代码版本    : $rev"
+
+    $imgName = Get-EnvValue -Key 'IMAGE_NAME'
+    if ([string]::IsNullOrWhiteSpace($imgName)) { $imgName = 'limit-up-pullback' }
+    $imgTag = Get-EnvValue -Key 'IMAGE_TAG'
+    if ([string]::IsNullOrWhiteSpace($imgTag)) { $imgTag = 'latest' }
+    $imgId = ''
+    try { $imgId = (docker image inspect --format '{{.Id}}' ($imgName + ':' + $imgTag)) } catch { $imgId = '' }
+    if (-not [string]::IsNullOrWhiteSpace($imgId)) {
+        $short = $imgId -replace '^sha256:', ''
+        if ($short.Length -gt 12) { $short = $short.Substring(0, 12) }
+        Write-Host "  运行镜像    : $short"
+    }
+
+    # 功能自检：新版 /health 才有 scanReady 字段，缺它就说明容器里跑的是旧镜像
+    try {
+        $probe = Invoke-RestMethod -Uri "http://127.0.0.1:$P/api/v1/health" -TimeoutSec 5
+        if ($null -ne $probe.scanReady) {
+            Write-Ok '功能自检    : 已运行最新版后端（含 scanReady / memoryMB 等排障字段）'
+        }
+        else {
+            Write-Warn2 '功能自检    : 运行的仍是旧版后端（/health 缺少 scanReady 字段）'
+            Write-Warn2 '  说明：镜像没有真正更新。请确认 git pull 成功，并执行 docker compose build --no-cache app'
+        }
+    }
+    catch { }
+
     Write-Host '  常用命令    : .\deploy.ps1 -Logs | -Status | -Update | -Stop'
     Write-Host '  完整部署文档: docs/DEPLOYMENT.md'
     Write-Title '=============================================='
@@ -276,7 +308,28 @@ function Start-Deployment {
     if (-not $useHttps) { Open-Firewall -P $script:HostPort }
 
     Write-Title '>>> 构建镜像与启动容器'
+    # 记录构建前后的镜像 ID 与容器启动时间：若都没变，说明这次「部署」其实没换代码。
+    # 实测踩过的坑：忘记 git pull 时 Docker 全部命中缓存、容器也不重建，
+    # 脚本却照样报「部署完成」，让人误以为修复已上线。
+    $imgName = Get-EnvValue -Key 'IMAGE_NAME'; if ([string]::IsNullOrWhiteSpace($imgName)) { $imgName = 'limit-up-pullback' }
+    $imgTag = Get-EnvValue -Key 'IMAGE_TAG'; if ([string]::IsNullOrWhiteSpace($imgTag)) { $imgTag = 'latest' }
+    $ctrName = Get-EnvValue -Key 'CONTAINER_NAME'; if ([string]::IsNullOrWhiteSpace($ctrName)) { $ctrName = 'limit-up-app' }
+    $beforeImage = (docker image inspect --format '{{.Id}}' "${imgName}:${imgTag}" 2>$null)
+    $beforeStarted = (docker inspect --format '{{.State.StartedAt}}' $ctrName 2>$null)
+
     Invoke-Compose -Arguments (@($profileArgs) + @('up', '-d', '--build', '--remove-orphans'))
+
+    $afterImage = (docker image inspect --format '{{.Id}}' "${imgName}:${imgTag}" 2>$null)
+    $afterStarted = (docker inspect --format '{{.State.StartedAt}}' $ctrName 2>$null)
+    if ($beforeImage -and $beforeImage -eq $afterImage) {
+        Write-Warn2 '镜像未发生变化（ID 相同，全部命中构建缓存）→ 本次部署很可能没有换新代码'
+        Write-Warn2 '  请确认 git pull 成功：git log --oneline -1'
+        Write-Warn2 '  确实已是最新代码仍如此时，强制重建：docker compose build --no-cache app'
+    }
+    if ($beforeStarted -and $beforeStarted -eq $afterStarted) {
+        Write-Warn2 '容器未重建（启动时间未变化）→ .env 的改动与本次镜像都不会生效'
+        Write-Warn2 '  需要重建时执行：docker compose up -d --force-recreate'
+    }
 
     Write-Title '>>> 等待服务启动'
     if (Wait-Healthy -P $script:HostPort) {
