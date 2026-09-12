@@ -421,7 +421,9 @@ def test_pool_flow(client, signals):
 # --------------------------------------------------------------------- 3.15
 def test_settings(client):
     data = body_of(client.get(f"{API}/settings"))["data"]
-    assert set(data) == {
+    # 用「包含」而非「完全相等」：诊断用的字段（memoryCache / klineCache 等）
+    # 会随排障需要增加，不该每次都改这条断言。
+    assert {
         "appName",
         "version",
         "dataSourceMode",
@@ -439,7 +441,10 @@ def test_settings(client):
         "syntheticEnabled",
         "serverTime",
         "timezone",
-    }
+    } <= set(data)
+    # 进程内日线缓存的状态必须可见（排查「页面慢」时的关键指标）
+    assert "memoryCache" in data
+    assert set(data["memoryCache"]) == {"codes", "ttlSeconds", "hits", "misses"}
     assert data["appName"] == "涨停回调低吸战法"
     assert data["dataSourceMode"] == "synthetic"
     assert data["dataSourceActive"] == "synthetic"

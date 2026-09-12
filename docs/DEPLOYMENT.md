@@ -477,6 +477,10 @@ server {
 | `CONTAINER_NAME` | `limit-up-app` | 容器名 |
 | `DATA_SOURCE_MODE` | `auto` | `auto`：按 `DATA_SOURCE_ORDER` 依次尝试真实源，全部不可用才降级为演示数据；`real`：绝不降级，全部真实源失败即报错（HTTP 503，生产推荐）；`eastmoney`/`tencent`/`ths`/`sina`/`yahoo`：强制单一源；`synthetic`：强制合成数据，完全离线 |
 | `CACHE_TTL_SECONDS` | `300` | 行情缓存有效期（秒），降低外部接口压力 |
+| `KLINE_MEMORY_CACHE_SECONDS` | `900` | **进程内**日线读穿缓存有效期（秒），`0` = 关闭。它只代替 SQLite 读取，不参与新鲜度判定，因此不影响开盘期间 30 秒刷新的语义。全市场约占用 150MB 内存；内存紧张的机器可设为 `0`，代价是每次请求都要重建日线（慢很多） |
+| `KLINE_MEMORY_CACHE_MAX_CODES` | `8000` | 进程内缓存最多持有的股票数，超出即整体重建 |
+| `WARMUP_ON_STARTUP` | `true` | 启动后后台预热全市场日线（首轮约 3 分钟）。不阻塞服务启动；设为 `false` 可关闭 |
+| `WARMUP_WAIT_MIN_CODES` | `500` | 请求股票数达到该值时先等待预热完成，避免与预热重复取同一批数据；单只股票请求不受影响 |
 | `UNIVERSE_SIZE` | `300` | 合成演示数据的股票数量 |
 | `HTTP_TIMEOUT` | `10` | 外部行情接口超时（秒） |
 | `LOG_LEVEL` | `INFO` | `DEBUG` / `INFO` / `WARNING` / `ERROR` |
@@ -779,6 +783,30 @@ cd <项目目录>
 > 镜像内部没有 Nginx，对外端口本应由 Docker 直接映射。
 
 #### 14.3.2 三种典型情况与处理
+
+**情况 D：首屏很慢或大面积超时（后端正常时的性能问题）**
+
+全市场（约 5500 只）的日线重建与首轮取数都很重。项目已针对此做了三层处理，
+若你改动过相关配置或机器特别小，可按下面的数字自查：
+
+| 环节 | 实测（全市场 5561 只） | 处理 |
+|---|---|---|
+| 首轮从上游取全部日线 | **约 195 秒**（一次性） | 已内置**启动后台预热**（`WARMUP_ON_STARTUP`），部署完成后稍等再访问 |
+| 从 SQLite 重建全部日线 | **43.94 秒**（同步执行时会占死事件循环） | 已改为线程池执行 + **进程内读穿缓存**（`KLINE_MEMORY_CACHE_SECONDS`） |
+| 批量写回 SQLite | 数十秒（早期是 5561 次事务提交） | 已改为**单事务批量写入** |
+| 预热完成后的接口 | `/market/overview` 2.1s、`/stocks` 0.10s、`/signals` 0.01s、`/settings` 0.33s | — |
+
+判断预热是否完成：
+
+```bash
+curl -s http://127.0.0.1:8000/api/v1/health | grep -o '"scanReady":[a-z]*'
+```
+
+`scanReady:false` = 预热进行中，此时重接口慢属正常。前端对重接口已放宽到 180 秒超时。
+
+> 内存提示：全市场 + 进程内缓存满负荷时，容器实测占用约 **560MB**。
+> 1GB 内存的机器建议把 `UNIVERSE_SIZE` 设为 1500~3000，或把
+> `KLINE_MEMORY_CACHE_SECONDS=0` 关掉内存缓存（以速度换内存）。
 
 **情况 A：容器没在运行（代理自然返回 502）**
 

@@ -43,8 +43,16 @@ async def lifespan(app: FastAPI):
         settings.data_path,
     )
     try:
-        await get_provider()
+        provider = await get_provider()
         logger.info("当前生效数据源：%s", get_active_data_source())
+        # 启动后台预热：全市场首轮取数约 3 分钟（云服务器更久），
+        # 若留给「用户打开页面那一刻」，首屏必然大面积超时。
+        # 这里只登记后台任务，不阻塞启动；失败也不影响服务可用性。
+        if settings.warmup_on_startup:
+            starter = getattr(provider, "start_warmup", None)
+            if callable(starter):
+                starter()
+                logger.info("已登记后台预热任务（先取全市场日线，期间接口仍可正常访问）")
     except Exception as exc:  # noqa: BLE001 - 启动阶段数据源异常不应阻断服务
         logger.warning("数据源初始化失败（将在首次请求时重试）：%s", exc)
     yield

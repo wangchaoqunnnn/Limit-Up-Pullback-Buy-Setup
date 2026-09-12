@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
 from typing import Any, Iterable, Sequence
@@ -55,6 +56,11 @@ MIN_BARS = 20
 #: 取值不大不小：太短会每次刷新都白跑一轮上游请求，太长则新上市股票
 #: 补到足够历史后无法及时纳入。20 分钟足以覆盖开盘期间的多轮刷新。
 UNAVAILABLE_RETRY_SECONDS = 1200
+
+#: 进程内日线缓存每只股票最多保留的根数。
+#: 策略所需最长回看为 250 根（近 120 日位置 + MA60 + 回调窗口），留少量余量即可。
+#: 若不设上限，库里最多 400 根/只，全市场内存占用约 200MB；设上限后约 130MB。
+MEM_FRAMES_MAX_BARS = 260
 
 
 def build_sources(order: Sequence[str], timeout: float, concurrency: int, kline_concurrency: int = 16) -> list[MarketSource]:
@@ -128,6 +134,16 @@ class ResilientProvider(BaseProvider):
         # 新浪也没有足够历史）。记录重试时间，冷却期内不再反复向上游请求，
         # 否则这些「注定拿不到」的股票会在每次刷新时都触发一轮重试。
         self._unavailable_until: dict[str, float] = {}
+        # 进程内日线读穿缓存：{code: (日线, 写入时刻)}。
+        # 只用于**代替 SQLite 读取**（全市场重建一次实测 43.94 秒），
+        # 不参与新鲜度判定 —— 是否补数仍由 TTL / reference_bar_date 决定，
+        # 所以开盘期间 30 秒刷新一轮的语义不变。
+        # 仅在事件循环线程内读写，无需加锁。
+        self._mem_frames: dict[str, tuple[pd.DataFrame, float]] = {}
+        self._mem_hits = 0
+        self._mem_misses = 0
+        # 启动后台预热任务（见 start_warmup）
+        self._warm_task: asyncio.Task[Any] | None = None
 
     # ------------------------------------------------------------------ 标识
     @property
@@ -144,10 +160,70 @@ class ResilientProvider(BaseProvider):
 
     # ------------------------------------------------------------------ 生命周期
     async def close(self) -> None:
+        if self._warm_task is not None and not self._warm_task.done():
+            self._warm_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self._warm_task
         for source in self.sources:
             await source.close()
         await self.fallback.close()
         self.cache.close()
+
+    # ------------------------------------------------------------------ 预热
+    def start_warmup(self) -> None:
+        """登记一个后台预热任务（不阻塞启动；重复调用是幂等的）。
+
+        预热内容：取全市场股票列表 + 把全部日线读进缓存与进程内缓存。
+        完成后用户首次打开页面即可秒开，而不是自己承担几分钟的首轮取数。
+        """
+        if not self.sources or self._using_fallback:
+            return
+        if self._warm_task is not None and not self._warm_task.done():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:  # 不在事件循环内（如单测直接调用）时静默跳过
+            return
+        self._warm_task = loop.create_task(self._warmup())
+
+    async def _warmup(self) -> None:
+        """后台预热实现：任何异常都只记日志，绝不影响服务可用性。"""
+        started = time.perf_counter()
+        try:
+            metas = await self.get_stock_list()
+            if not metas:
+                logger.warning("后台预热：股票池为空，跳过（首次请求时会重试）")
+                return
+            logger.info("后台预热开始：%d 只股票的日线，请稍候（不影响接口可用性）", len(metas))
+            frames = await self._ensure_klines([m.code for m in metas], 250)
+            logger.info(
+                "后台预热完成：%d/%d 只日线已就绪，用时 %.1f 秒",
+                len(frames),
+                len(metas),
+                time.perf_counter() - started,
+            )
+        except asyncio.CancelledError:
+            logger.info("后台预热已取消（服务关闭）")
+            raise
+        except Exception as exc:  # noqa: BLE001 - 预热失败绝不能让服务不可用
+            logger.warning("后台预热失败（不影响服务，首次请求会自行重试）：%s", exc)
+
+    async def _await_warmup_if_needed(self, code_count: int) -> None:
+        """大批量请求先等预热跑完，避免同一批股票被取两次（上游易限流）。"""
+        task = self._warm_task
+        if task is None or task.done():
+            return
+        if asyncio.current_task() is task:
+            return  # 预热自己调用的，不能等自己
+        try:
+            threshold = int(self._settings.warmup_wait_min_codes)
+        except (AttributeError, TypeError, ValueError):  # noqa: BLE001
+            threshold = 500
+        if code_count < max(1, threshold):
+            return
+        # shield：即便调用方（浏览器）断开，预热也应继续跑完
+        with contextlib.suppress(Exception):
+            await asyncio.shield(task)
 
     def reset_health(self) -> None:
         """重置全部数据源的健康度，使被跳过的源重新参与尝试。
@@ -606,8 +682,68 @@ class ResilientProvider(BaseProvider):
         wanted = [str(c) for c in codes]
         return await self._ensure_klines(wanted, days)
 
+    # ------------------------------------------------------- 进程内读穿缓存
+    def _mem_ttl(self) -> float:
+        """内存缓存有效期（秒）；0 表示关闭。"""
+        try:
+            return max(0.0, float(self._settings.kline_memory_cache_seconds))
+        except (AttributeError, TypeError, ValueError):  # noqa: BLE001 - 兼容自定义 settings
+            return 0.0
+
+    def _mem_get_many(self, codes: Sequence[str]) -> dict[str, pd.DataFrame]:
+        """从进程内缓存取日线（只取仍然新鲜的部分）。
+
+        只代替数据库读取，不改变新鲜度判定：返回的数据与数据库里的一致。
+        """
+        ttl = self._mem_ttl()
+        if ttl <= 0 or not self._mem_frames:
+            self._mem_misses += len(codes)
+            return {}
+        now = time.time()
+        out: dict[str, pd.DataFrame] = {}
+        for code in codes:
+            item = self._mem_frames.get(code)
+            if item is None:
+                continue
+            df, stamp = item
+            if now - stamp <= ttl:
+                out[code] = df
+        self._mem_hits += len(out)
+        self._mem_misses += len(codes) - len(out)
+        return out
+
+    def _mem_put_many(self, frames: dict[str, pd.DataFrame]) -> None:
+        """写入进程内缓存；超过上限时整体重建，避免无界增长。"""
+        ttl = self._mem_ttl()
+        if ttl <= 0 or not frames:
+            return
+        try:
+            limit = int(self._settings.kline_memory_cache_max_codes)
+        except (AttributeError, TypeError, ValueError):  # noqa: BLE001
+            limit = 8000
+        if limit > 0 and len(self._mem_frames) + len(frames) > limit:
+            # 股票池变化（例如从全市场切到小池）时直接重建，逻辑简单且不会泄漏
+            self._mem_frames = {}
+        stamp = time.time()
+        for code, df in frames.items():
+            if df is None or df.empty:
+                continue
+            # 只保留策略真正需要的窗口：最长回看 250 根，留 260 根余量。
+            # 不设上限时每只可能留 400 根，全市场约 200MB；设上限后约 130MB。
+            self._mem_frames[str(code)] = (df.tail(MEM_FRAMES_MAX_BARS), stamp)
+
+    def invalidate_memory_cache(self) -> None:
+        """清空进程内日线缓存（用户手动刷新时调用，确保重新取上游）。"""
+        cleared = len(self._mem_frames)
+        self._mem_frames = {}
+        if cleared:
+            logger.info("已清空进程内日线缓存（%d 只），下次请求将重新读取缓存并向上游补数", cleared)
+
     async def _ensure_klines(self, codes: Sequence[str], days: int) -> dict[str, pd.DataFrame]:
         """核心：按需增量补齐日线并返回完整结果。"""
+        if self._using_fallback:
+            return await self.fallback.get_daily_kline_batch(codes, days)
+        await self._await_warmup_if_needed(len(codes))
         settings = self._settings
         ttl = effective_ttl(settings.cache_ttl_seconds, settings.refresh_interval_seconds)
         # 已将当日最后一根写进缓存时，只要距上次写入不超过 ttl 就算新鲜。
@@ -624,8 +760,19 @@ class ResilientProvider(BaseProvider):
         out: dict[str, pd.DataFrame] = {}
         stale: list[str] = []
         thin_cached: list[str] = []
-        # 一次批量读回全部缓存（避免逐只查询产生 1000 次往返）
-        cached_frames = self.cache.get_many(codes, days)
+        # 第一层：进程内读穿缓存（命中则完全不需要碰数据库）。
+        cached_frames = self._mem_get_many(codes)
+        missing = [c for c in codes if c not in cached_frames]
+        if missing:
+            # 第二层：SQLite。**必须放到线程池里执行（本项目最严重的性能缺陷）**：
+            # 全市场 5561 只、137 万行时，这个同步读取 + pandas 转换本机实测
+            # 要 **43.94 秒**。它此前直接写在 async 函数里，于是这 44 秒内
+            # 事件循环被完全占死 —— 所有并发请求（含 /health、/market/clock）
+            # 都是「TCP 已连接但没有任何响应」，浏览器 15 秒后报「请求超时」，
+            # 前置反向代理则报 502/504。用户看到的就是「部署后整个页面全部加载失败」。
+            db_frames = await asyncio.to_thread(self.cache.get_many, missing, days)
+            self._mem_put_many(db_frames)
+            cached_frames.update(db_frames)
         for code in codes:
             df = cached_frames.get(code)
             if df is None or df.empty:
@@ -719,6 +866,10 @@ class ResilientProvider(BaseProvider):
             if backup is not None and len(backup) >= MIN_BARS:
                 out[code] = backup
 
+        # 把本轮结果放进进程内缓存：下次请求（含其它接口）就不必再从
+        # SQLite 重建百万行。放在裁剪之前，以便后续请求能拿到更长的窗口。
+        self._mem_put_many(out)
+
         # 统一裁剪到请求的根数，保证调用方拿到的日线长度一致：
         # 直接命中缓存的股票是 days 根，而增量补齐的股票可能只有几十根，
         # 若不统一，跨股票的均线/位置判据会因窗口不同而失真。
@@ -808,7 +959,9 @@ class ResilientProvider(BaseProvider):
                 ok_sources.add(source.name)
                 self._active_source = source.name
                 self._last_pick["日线"] = source.name
-                self.cache.upsert_many(ok_frames)
+                # 落库同样放到线程池：全市场一次要写百万行，
+                # 在事件循环里同步写会让并发请求全部卡住（见上方 44 秒的说明）。
+                await asyncio.to_thread(self.cache.upsert_many, ok_frames)
                 result.update(ok_frames)
                 resolved.update(ok_frames)
                 # 仍缺失或数据量不足的交给下一个源补
@@ -912,6 +1065,12 @@ class ResilientProvider(BaseProvider):
             "universeBoards": self._universe_boards or self._board_counts(self._universe),
             "universeFullMarket": int(settings.universe_size) <= 0,
             "cache": self.cache.stats(),
+            "memoryCache": {
+                "codes": len(self._mem_frames),
+                "ttlSeconds": self._mem_ttl(),
+                "hits": self._mem_hits,
+                "misses": self._mem_misses,
+            },
             "ttlSeconds": effective_ttl(settings.cache_ttl_seconds, settings.refresh_interval_seconds),
             "refreshIntervalSeconds": int(settings.refresh_interval_seconds),
             "clock": market_clock(interval_seconds=settings.refresh_interval_seconds),
@@ -921,8 +1080,12 @@ class ResilientProvider(BaseProvider):
         """强制刷新（供 ``POST /api/v1/scan`` 的 refresh=true 使用）。
 
         返回刷新摘要，用于向前端反馈「实际向哪个源请求了多少只」。
+
+        用户主动刷新时先清空进程内日线缓存：否则本轮会被内存里的旧数据
+        直接命中而「看似刷新成功、其实没取上游」。
         """
         target = list(codes) if codes else [m.code for m in await self.get_stock_list()]
+        self.invalidate_memory_cache()
         started = time.perf_counter()
         frames = await self._ensure_klines(target, days)
         elapsed = time.perf_counter() - started

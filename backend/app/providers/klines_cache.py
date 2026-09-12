@@ -243,17 +243,26 @@ class KlineCache:
         # 关键性能点：pandas 的类型转换有固定开销（每次约 10~15ms），
         # 若对 1000 只股票逐只转换要花 10~15 秒。
         # 这里改为「全量拼一次 → 只转换一次 → 按代码切分」，开销降到亚秒级。
-        all_rows = pd.concat(frames, ignore_index=True)
-        # 日期在库里就是 YYYY-MM-DD 文本，可直接用于排序与比较；
-        # 先转 datetime64 再按 (code, date) 排序，等价于按每只的日期升序。
-        all_rows["date"] = pd.to_datetime(all_rows["date"], errors="coerce")
+        all_rows = pd.concat(frames, ignore_index=True) if len(frames) > 1 else frames[0]
+        # 日期在库里固定是 YYYY-MM-DD 文本：**显式给出 format 极重要**，
+        # 让 pandas 走快路径解析；不指定时它会先尝试推断格式，
+        # 全市场 137 万行实测相差数秒。
+        all_rows["date"] = pd.to_datetime(all_rows["date"], format="%Y-%m-%d", errors="coerce")
+        # 只对「还不是 float64」的列做转换：SQLite 的 REAL 列经 DataFrame 构造后
+        # 通常已是 float64，仅含 NULL 的列才会退化成 object。
+        # 无脑全列 to_numeric 会在 137 万行上白花数秒。
         for col in KLINE_COLUMNS[1:]:
-            all_rows[col] = pd.to_numeric(all_rows[col], errors="coerce").astype("float64")
-        all_rows = all_rows.dropna(subset=["date"]).sort_values(["code", "date"], kind="stable")
+            if all_rows[col].dtype != "float64":
+                all_rows[col] = pd.to_numeric(all_rows[col], errors="coerce").astype("float64")
+        all_rows = all_rows.dropna(subset=["date"])
         if all_rows.empty:
             return out
+        # 不再额外 sort_values：上面的 SQL 已经是 ORDER BY code, date，
+        # 与索引 (code, date) 同序，pandas 的 groupby 会保持组内出现顺序，
+        # 因此 group.tail(cap) 取到的就是「最近 cap 根」。
+        # （早期实现多了一次 sort_values，在 137 万行上属纯浪费。）
 
-        # 单次 groupby 切分，尾取 cap 根（已按日期升序）
+        # 单次 groupby 切分，尾取 cap 根
         for code, group in all_rows.groupby("code", sort=False):
             tail = group.tail(cap) if len(group) > cap else group
             df = tail[KLINE_COLUMNS].reset_index(drop=True)
@@ -262,14 +271,20 @@ class KlineCache:
         return out
 
     # ------------------------------------------------------------------ 写
-    def upsert(self, code: str, df: pd.DataFrame) -> int:
-        """写入/更新某只股票的日线，返回写入行数。
+    @staticmethod
+    def _upsert_sql() -> str:
+        placeholders = ",".join("?" * (len(KLINE_COLUMNS) + 1))
+        return (
+            f"INSERT INTO bars (code, {', '.join(KLINE_COLUMNS)}) VALUES ({placeholders}) "
+            f"ON CONFLICT(code, date) DO UPDATE SET "
+            + ", ".join(f"{c}=excluded.{c}" for c in KLINE_COLUMNS[1:])
+        )
 
-        以 ``(code, date)`` 为主键做 UPSERT：已存在的日期会被最新数据覆盖
-        （当日盘中反复刷新时，最后一根 K 线会不断被更新为最新价）。
-        """
+    @staticmethod
+    def _rows_for(code: str, df: pd.DataFrame) -> list[tuple[Any, ...]]:
+        """把一只股票的日线整理成待写入的行（无效行直接丢弃）。"""
         if df is None or df.empty:
-            return 0
+            return []
         code = str(code)
         rows: list[tuple[Any, ...]] = []
         for record in df.itertuples(index=False):
@@ -295,17 +310,24 @@ class KlineCache:
                 values.append(num)
             if ok:
                 rows.append(tuple(values))
+        return rows
+
+    def upsert(self, code: str, df: pd.DataFrame) -> int:
+        """写入/更新某只股票的日线，返回写入行数。
+
+        以 ``(code, date)`` 为主键做 UPSERT：已存在的日期会被最新数据覆盖
+        （当日盘中反复刷新时，最后一根 K 线会不断被更新为最新价）。
+
+        批量场景请用 ``upsert_many``：逐只调用会产生**每只一次事务提交**，
+        全市场下开销极大。
+        """
+        rows = self._rows_for(code, df)
         if not rows:
             return 0
-        placeholders = ",".join("?" * (len(KLINE_COLUMNS) + 1))
-        sql = (
-            f"INSERT INTO bars (code, {', '.join(KLINE_COLUMNS)}) VALUES ({placeholders}) "
-            f"ON CONFLICT(code, date) DO UPDATE SET "
-            + ", ".join(f"{c}=excluded.{c}" for c in KLINE_COLUMNS[1:])
-        )
+        code = str(code)
         with self._lock:
             try:
-                self.conn.executemany(sql, rows)
+                self.conn.executemany(self._upsert_sql(), rows)
                 self.conn.commit()
             except sqlite3.Error as exc:
                 logger.warning("写入 %s 缓存失败：%s", code, exc)
@@ -314,15 +336,55 @@ class KlineCache:
         return len(rows)
 
     def upsert_many(self, frames: dict[str, pd.DataFrame]) -> tuple[int, int]:
-        """批量写入，返回 (写入股票数, 写入行数)。"""
-        codes = 0
-        total = 0
+        """批量写入，返回 (写入股票数, 写入行数)。
+
+        **性能要点（实测踩过的大坑）**：早期实现是逐只调用 ``upsert``，
+        而 ``upsert`` 每次都会 ``commit()`` —— 全市场 5561 只就是 5561 次事务提交，
+        每次都带 fsync，在云服务器磁盘上极其昂贵。改为**整批一个事务**提交，
+        并按行数分块（避免一次构造百万级参数列表占满内存）。
+        """
+        if not frames:
+            return (0, 0)
+
+        sql = self._upsert_sql()
+        total_codes = 0
+        total_rows = 0
+        batch: list[tuple[Any, ...]] = []
+        batch_codes: set[str] = set()
+        # 单块上限：约 20 万行，兼顾内存与事务效率
+        chunk_rows = 200_000
+
+        def flush() -> None:
+            nonlocal batch, batch_codes, total_codes, total_rows
+            if not batch:
+                return
+            rows_in_batch = batch
+            codes_in_batch = batch_codes
+            batch = []
+            batch_codes = set()
+            with self._lock:
+                try:
+                    self.conn.executemany(sql, rows_in_batch)
+                    self.conn.commit()
+                except sqlite3.Error as exc:
+                    logger.warning("批量写入缓存失败：%s", exc)
+                    return
+            stamp = time.time()
+            for code in codes_in_batch:
+                self._write_at[code] = stamp
+            total_codes += len(codes_in_batch)
+            total_rows += len(rows_in_batch)
+
         for code, df in frames.items():
-            written = self.upsert(code, df)
-            if written:
-                codes += 1
-                total += written
-        return codes, total
+            rows = self._rows_for(code, df)
+            if not rows:
+                continue
+            batch.extend(rows)
+            batch_codes.add(str(code))
+            if len(batch) >= chunk_rows:
+                flush()
+        flush()
+        return (total_codes, total_rows)
 
     def invalidate(self, code: str | None = None) -> None:
         """让指定股票（或全部）的缓存被认为已过期，下次强制重新拉取。"""

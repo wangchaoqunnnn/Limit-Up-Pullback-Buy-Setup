@@ -56,6 +56,7 @@ async def get_app_settings(deep: bool = Query(False, description="是否拉取�
             ),
             "refreshIntervalSeconds": int(settings.refresh_interval_seconds),
             "klineCache": status.get("cache", {}),
+            "memoryCache": status.get("memoryCache", {}),
             "clock": clock,
             "syntheticEnabled": True,
             "serverTime": now_iso(),

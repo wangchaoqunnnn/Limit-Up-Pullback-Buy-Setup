@@ -136,19 +136,37 @@ def get_active_data_source() -> str:
     return _provider.source_label()
 
 
+def _empty_status() -> dict[str, Any]:
+    """合成/未初始化时的状态骨架。
+
+    字段与 ``ResilientProvider.status()`` 保持一致，使前端拿到的契约稳定
+    （不必对「演示模式」额外分支处理）。
+    """
+    return {
+        "mode": get_settings().data_source_mode,
+        "active": "unknown",
+        "usingFallback": False,
+        "sources": [],
+        "cache": {},
+        "memoryCache": {"codes": 0, "ttlSeconds": 0, "hits": 0, "misses": 0},
+    }
+
+
 def get_source_status() -> dict[str, Any]:
     """返回多源运行状态（供 /api/v1/settings 与 /api/v1/sources 展示）。"""
     if _provider is None:
-        return {"mode": get_settings().data_source_mode, "active": "unknown", "sources": []}
+        return _empty_status()
     status = getattr(_provider, "status", None)
     if callable(status):
         return status()
-    return {
-        "mode": get_settings().data_source_mode,
-        "active": _provider.source_label(),
-        "usingFallback": _provider.source_label() == "synthetic",
-        "sources": [],
-    }
+    out = _empty_status()
+    out.update(
+        {
+            "active": _provider.source_label(),
+            "usingFallback": _provider.source_label() == "synthetic",
+        }
+    )
+    return out
 
 
 async def reset_provider() -> None:

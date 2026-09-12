@@ -46,6 +46,14 @@ services:
       REFRESH_INTERVAL_SECONDS: "${REFRESH_INTERVAL_SECONDS:-30}"
       # 日线增量缓存每只保留的最大根数与并发数
       KLINE_CACHE_MAX_DAYS: "${KLINE_CACHE_MAX_DAYS:-400}"
+      # 进程内日线读穿缓存：全市场从 SQLite 重建一次实测 43.94 秒，
+      # 有了它后续请求直接命中内存（不改变 30 秒刷新的新鲜度语义）。
+      # 全市场约占 150MB；内存紧张的机器可设为 0。
+      KLINE_MEMORY_CACHE_SECONDS: "${KLINE_MEMORY_CACHE_SECONDS:-900}"
+      KLINE_MEMORY_CACHE_MAX_CODES: "${KLINE_MEMORY_CACHE_MAX_CODES:-8000}"
+      # 启动后台预热全市场日线（一次性约 3 分钟，期间接口照常可用）
+      WARMUP_ON_STARTUP: "${WARMUP_ON_STARTUP:-true}"
+      WARMUP_WAIT_MIN_CODES: "${WARMUP_WAIT_MIN_CODES:-500}"
       SOURCE_CONCURRENCY: "${SOURCE_CONCURRENCY:-12}"
       KLINE_CONCURRENCY: "${KLINE_CONCURRENCY:-24}"
       # 上游接口超时（秒）。东方财富在受限网络下会被快速失败并由其他源接管

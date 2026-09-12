@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pandas as pd
@@ -315,3 +316,141 @@ async def test_empty_result_is_still_recorded_as_failure(provider: ResilientProv
     await provider.get_daily_kline_batch(["600519"], 250)
 
     assert provider.health["empty"].total_failure >= 1
+
+
+# ------------------------------------------------------- 缓存 I/O 不得阻塞事件循环
+# 实测：全市场 5561 只、137 万行时，KlineCache.get_many 同步执行要 **43.94 秒**，
+# upsert_many 写回也要数十秒。它们此前直接写在 async 函数里，于是这几十秒内
+# 事件循环被完全占死 —— 所有并发请求（含 /health、/market/clock）都是
+# 「TCP 已连接但无任何响应」，浏览器 15 秒后报超时，前置代理报 502。
+# 用户看到的是「部署后整个页面全部加载失败」，而应用其实没崩。
+# 以下用例确保缓存读写始终在 worker 线程里执行，事件循环始终保持可响应。
+
+
+@pytest.mark.asyncio
+async def test_cache_io_runs_off_the_event_loop(provider: ResilientProvider):
+    """缓存读/写必须在别的线程执行：调用期间事件循环仍能推进心跳。"""
+    import threading
+    import time as _time
+
+    from app.providers.source_base import SourceHealth
+
+    loop_thread = threading.get_ident()
+    seen_threads: list[int] = []
+    ticks: list[float] = []
+
+    real_get_many = provider.cache.get_many
+
+    def slow_get_many(codes, days, *a, **kw):
+        seen_threads.append(threading.get_ident())
+        _time.sleep(0.25)  # 模拟真实的全市场读取耗时
+        return real_get_many(codes, days, *a, **kw)
+
+    provider.cache.get_many = slow_get_many  # type: ignore[method-assign]
+    good = StubSource("good", bars={"600519": 250})
+    provider.sources = [good]
+    provider.health = {s.name: SourceHealth(name=s.name) for s in provider.sources}
+
+    async def heartbeat() -> None:
+        for _ in range(5):
+            ticks.append(_time.perf_counter())
+            await asyncio.sleep(0.05)
+
+    hb = asyncio.create_task(heartbeat())
+    started = _time.perf_counter()
+    frames = await provider.get_daily_kline_batch(["600519"], 250)
+    elapsed = _time.perf_counter() - started
+    await hb
+
+    assert "600519" in frames
+    assert seen_threads and all(t != loop_thread for t in seen_threads), (
+        "缓存读取必须在线程池中执行，否则会阻塞事件循环数十秒"
+    )
+    # 关键断言：0.25 秒的缓存读取期间，事件循环仍推进了心跳
+    assert len(ticks) >= 4, f"缓存读取期间事件循环被阻塞（仅 {len(ticks)} 次心跳）"
+    assert elapsed >= 0.25
+
+
+@pytest.mark.asyncio
+async def test_memory_cache_serves_repeat_requests_without_db_read(provider: ResilientProvider):
+    """第二轮请求应命中进程内缓存，不再读数据库。"""
+    from app.providers.source_base import SourceHealth
+
+    provider._settings.kline_memory_cache_seconds = 900  # type: ignore[attr-defined]
+    good = StubSource("good", bars={"600519": 250, "300750": 250})
+    provider.sources = [good]
+    provider.health = {s.name: SourceHealth(name=s.name) for s in provider.sources}
+
+    calls = {"n": 0}
+    real_get_many = provider.cache.get_many
+
+    def counting_get_many(codes, days, *a, **kw):
+        calls["n"] += 1
+        return real_get_many(codes, days, *a, **kw)
+
+    provider.cache.get_many = counting_get_many  # type: ignore[method-assign]
+
+    first = await provider.get_daily_kline_batch(["600519", "300750"], 250)
+    after_first = calls["n"]
+    second = await provider.get_daily_kline_batch(["600519", "300750"], 250)
+
+    assert len(first["600519"]) == len(second["600519"]) == 250
+    assert after_first >= 1, "首轮必须读一次数据库"
+    assert calls["n"] == after_first, "第二轮不应再读数据库（应命中进程内缓存）"
+    assert provider.status()["memoryCache"]["codes"] == 2
+
+
+@pytest.mark.asyncio
+async def test_memory_cache_can_be_disabled_and_invalidated(provider: ResilientProvider):
+    """ttl=0 时彻底关闭；显式失效后必须重新读库。"""
+    from app.providers.source_base import SourceHealth
+
+    good = StubSource("good", bars={"600519": 250})
+    provider.sources = [good]
+    provider.health = {s.name: SourceHealth(name=s.name) for s in provider.sources}
+
+    # 关闭
+    provider._settings.kline_memory_cache_seconds = 0  # type: ignore[attr-defined]
+    await provider.get_daily_kline_batch(["600519"], 250)
+    assert provider.status()["memoryCache"]["codes"] == 0
+
+    # 开启并失效
+    provider._settings.kline_memory_cache_seconds = 900  # type: ignore[attr-defined]
+    await provider.get_daily_kline_batch(["600519"], 250)
+    assert provider.status()["memoryCache"]["codes"] == 1
+    provider.invalidate_memory_cache()
+    assert provider.status()["memoryCache"]["codes"] == 0
+
+
+# ------------------------------------------------------- 缓存写入必须单事务
+def test_upsert_many_uses_single_transaction(tmp_path):
+    """批量写入必须合并事务：逐只 commit 在全市场下会产生 5000+ 次 fsync。"""
+    from app.providers.klines_cache import KlineCache
+
+    cache = KlineCache(tmp_path / "single-tx.db")
+    frames = {f"60000{i}": frame(30) for i in range(5)}
+
+    class CountingConn:
+        """统计 commit 次数（sqlite3.Connection.commit 是只读属性，无法直接打桩）。"""
+
+        def __init__(self, conn) -> None:
+            self._conn = conn
+            self.commits = 0
+
+        def commit(self) -> None:
+            self.commits += 1
+            self._conn.commit()
+
+        def __getattr__(self, name):  # noqa: ANN001 - 其余方法原样转发
+            return getattr(self._conn, name)
+
+    proxy = CountingConn(cache.conn)
+    cache._conn = proxy  # type: ignore[assignment]
+
+    codes, rows = cache.upsert_many(frames)
+    assert codes == 5
+    assert rows == 5 * 30
+    assert proxy.commits == 1, f"应只提交一次事务，实际 {proxy.commits} 次"
+    # 数据确实落库
+    assert len(cache.get("600000", 250)) == 30
+    cache.close()
