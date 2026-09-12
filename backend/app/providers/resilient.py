@@ -28,6 +28,7 @@ import pandas as pd
 
 from ..config import get_settings
 from ..market_calendar import effective_ttl, is_market_open, market_clock, now_cn, reference_bar_date
+from ..memory import detect_memory, log_memory_report
 from ..models import StockMeta
 from .base import BaseProvider, DataSourceError, empty_kline
 from .industry import IndustryEnricher
@@ -144,6 +145,38 @@ class ResilientProvider(BaseProvider):
         self._mem_misses = 0
         # 启动后台预热任务（见 start_warmup）
         self._warm_task: asyncio.Task[Any] | None = None
+        # 内存守护结果（供 /health 与 /settings 展示）
+        self._memory_guard: dict[str, Any] = {}
+        self._apply_memory_guard()
+
+    # ------------------------------------------------------------------ 内存
+    def _apply_memory_guard(self) -> None:
+        """内存吃紧时自动降级：关闭进程内日线缓存并大声报警。
+
+        只做「不改变监控范围」的降级。是否缩小股票池必须由用户显式决定
+        （需求明确要求覆盖主板/创业板/科创板/北交所全部股票，静默减少属违背需求）。
+        """
+        try:
+            enabled = bool(getattr(self._settings, "memory_guard", True))
+        except Exception:  # noqa: BLE001
+            enabled = True
+        info = detect_memory()
+        log_memory_report(info, context="启动")
+        applied: list[str] = []
+        if enabled and info.is_low and int(getattr(self._settings, "kline_memory_cache_seconds", 0)) > 0:
+            # 进程内日线缓存是「可选」的大头（全市场约 130MB），关掉它不影响正确性，
+            # 只影响速度（每次请求改为从 SQLite 重建）。
+            try:
+                object.__setattr__(self._settings, "kline_memory_cache_seconds", 0)
+            except Exception:  # noqa: BLE001 - 设置对象不可写时忽略
+                pass
+            applied.append("已关闭进程内日线缓存（KLINE_MEMORY_CACHE_SECONDS=0）以腾出约 130MB")
+            logger.warning(
+                "内存守护已生效：%s。接口会变慢（每次请求需重建日线），"
+                "但可避免被 OOM 杀掉。根治办法是加 swap 或调小 UNIVERSE_SIZE。",
+                "；".join(applied),
+            )
+        self._memory_guard = {**info.snapshot(), "enabled": enabled, "applied": applied}
 
     # ------------------------------------------------------------------ 标识
     @property
@@ -1071,6 +1104,7 @@ class ResilientProvider(BaseProvider):
                 "hits": self._mem_hits,
                 "misses": self._mem_misses,
             },
+            "memoryGuard": self._memory_guard,
             "ttlSeconds": effective_ttl(settings.cache_ttl_seconds, settings.refresh_interval_seconds),
             "refreshIntervalSeconds": int(settings.refresh_interval_seconds),
             "clock": market_clock(interval_seconds=settings.refresh_interval_seconds),

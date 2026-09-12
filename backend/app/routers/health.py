@@ -7,6 +7,7 @@ import time
 from fastapi import APIRouter
 
 from ..config import APP_VERSION, get_settings
+from ..memory import detect_memory
 from ..providers import get_active_data_source, get_provider, get_source_status
 from ..strategy import scan_cache_state
 from ..utils import now_iso
@@ -77,6 +78,7 @@ async def health() -> dict:
         universe_size = int(settings.universe_size)
 
     sources = _source_summary()
+    mem = detect_memory()
     return {
         "status": "ok",
         "version": APP_VERSION,
@@ -87,6 +89,8 @@ async def health() -> dict:
         # 首轮预热是否完成：未完成时重接口慢属正常现象，而非故障
         "scanReady": bool(state.get("signals") is not None),
         "memoryMB": _rss_mb(),
+        # 内存是否吃紧 —— 被 OOM 杀掉的典型前兆，界面/监控可据此提前告警
+        "memory": mem.snapshot(),
         "sources": sources,
         "dataSourceMode": settings.data_source_mode,
     }

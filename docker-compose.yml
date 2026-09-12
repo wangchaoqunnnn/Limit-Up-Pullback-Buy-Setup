@@ -54,6 +54,8 @@ services:
       # 启动后台预热全市场日线（一次性约 3 分钟，期间接口照常可用）
       WARMUP_ON_STARTUP: "${WARMUP_ON_STARTUP:-true}"
       WARMUP_WAIT_MIN_CODES: "${WARMUP_WAIT_MIN_CODES:-500}"
+      # 低内存自动守护：内存吃紧时自动关闭进程内日线缓存并大声报警（不改监控范围）
+      MEMORY_GUARD: "${MEMORY_GUARD:-true}"
       SOURCE_CONCURRENCY: "${SOURCE_CONCURRENCY:-12}"
       KLINE_CONCURRENCY: "${KLINE_CONCURRENCY:-24}"
       # 上游接口超时（秒）。东方财富在受限网络下会被快速失败并由其他源接管

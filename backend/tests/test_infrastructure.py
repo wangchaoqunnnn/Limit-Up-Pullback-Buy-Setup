@@ -25,8 +25,10 @@ from app.market_calendar import (
     market_phase,
     next_open,
 )
+from app.config import get_settings
 from app.providers.base import KLINE_COLUMNS
 from app.providers.klines_cache import KlineCache
+from app.providers.resilient import ResilientProvider
 from app.providers.source_base import NEVER_SUCCEEDED_THRESHOLD, SourceHealth
 from app.providers.source_base import (
     board_of_code,
@@ -527,3 +529,89 @@ class TestScriptEncoding:
             raw = (REPO_ROOT / name).read_bytes()
             assert not raw.startswith(b"\xef\xbb\xbf"), f"{name} 不应带 BOM"
             assert b"\r\n" not in raw, f"{name} 必须使用 LF 换行"
+
+# --------------------------------------------------------------------- 内存守护
+# 实测踩坑：1.7GB 内存、无 swap 的云主机上按全市场运行会被内核 OOM 杀掉
+# （dmesg 里能看到 uid=1000 的 python 进程 anon-rss 约 480MB 时被 kill）。
+# 其表现是接口时好时坏、整页加载失败，而容器日志只有一次「启动成功」，
+# 极难排查。以下用例锁定探测与降级逻辑。
+class TestMemoryGuard:
+    """内存探测与低内存自动降级。"""
+
+    def test_effective_limit_takes_the_smaller(self):
+        from app.memory import MemoryInfo
+
+        info = MemoryInfo(total_mb=8192, available_mb=4096, cgroup_limit_mb=1024)
+        assert info.effective_limit_mb == 1024  # 容器限额优先
+
+    def test_low_memory_detected_by_available(self):
+        from app.memory import MemoryInfo
+
+        # 总量很大但当前可用很少 → 同样算吃紧（宿主机上还有其他进程）
+        info = MemoryInfo(total_mb=1730, available_mb=340, cgroup_limit_mb=None)
+        assert info.is_low is True
+        assert info.has_swap is False
+
+    def test_not_low_when_plenty(self):
+        from app.memory import MemoryInfo
+
+        info = MemoryInfo(total_mb=8192, available_mb=4096, swap_total_mb=2048)
+        assert info.is_low is False
+        assert info.has_swap is True
+
+    def test_unknown_memory_is_not_treated_as_low(self):
+        """探测不到（如 Windows 无 /proc/meminfo）时不得误判为低内存。"""
+        from app.memory import MemoryInfo
+
+        info = MemoryInfo()
+        assert info.is_low is False
+        assert info.effective_limit_mb is None
+
+    def test_guard_disables_memory_cache_when_low(self, monkeypatch):
+        """低内存时必须自动关掉进程内日线缓存（不改变监控范围）。"""
+        from app.memory import MemoryInfo
+        from app.providers import resilient as resilient_mod
+
+        low = MemoryInfo(total_mb=1730, available_mb=340, swap_total_mb=0)
+        monkeypatch.setattr(resilient_mod, "detect_memory", lambda: low)
+        settings = get_settings()
+        monkeypatch.setattr(settings, "memory_guard", True)
+        monkeypatch.setattr(settings, "kline_memory_cache_seconds", 900)
+
+        provider = ResilientProvider()
+        try:
+            assert settings.kline_memory_cache_seconds == 0, "低内存时应关闭内存缓存"
+            guard = provider.status()["memoryGuard"]
+            assert guard["enabled"] is True
+            assert guard["lowMemory"] is True
+            assert guard["applied"], "必须记录实际执行了哪些降级动作"
+        finally:
+            provider.cache.close()
+
+    def test_guard_can_be_disabled(self, monkeypatch):
+        """显式关闭守护时不得改动任何配置。"""
+        from app.memory import MemoryInfo
+        from app.providers import resilient as resilient_mod
+
+        low = MemoryInfo(total_mb=1730, available_mb=340)
+        monkeypatch.setattr(resilient_mod, "detect_memory", lambda: low)
+        settings = get_settings()
+        monkeypatch.setattr(settings, "memory_guard", False)
+        monkeypatch.setattr(settings, "kline_memory_cache_seconds", 900)
+
+        provider = ResilientProvider()
+        try:
+            assert settings.kline_memory_cache_seconds == 900
+            assert provider.status()["memoryGuard"]["applied"] == []
+        finally:
+            provider.cache.close()
+
+    @pytest.mark.skipif(not Path("/proc/meminfo").exists(), reason="仅 Linux 有 /proc/meminfo")
+    def test_detect_memory_reads_linux_procfs(self):
+        """.NET/Linux 上必须能读到真实数值（容器内 cgroup 限额可为 None）。"""
+        from app.memory import detect_memory
+
+        info = detect_memory()
+        assert info.total_mb and info.total_mb > 0
+        assert info.available_mb is not None
+        assert info.swap_total_mb is not None

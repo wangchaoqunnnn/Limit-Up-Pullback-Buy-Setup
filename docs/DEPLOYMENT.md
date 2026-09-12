@@ -481,6 +481,7 @@ server {
 | `KLINE_MEMORY_CACHE_MAX_CODES` | `8000` | 进程内缓存最多持有的股票数，超出即整体重建 |
 | `WARMUP_ON_STARTUP` | `true` | 启动后后台预热全市场日线（首轮约 3 分钟）。不阻塞服务启动；设为 `false` 可关闭 |
 | `WARMUP_WAIT_MIN_CODES` | `500` | 请求股票数达到该值时先等待预热完成，避免与预热重复取同一批数据；单只股票请求不受影响 |
+| `MEMORY_GUARD` | `true` | 低内存自动守护：不足 1.2GB 时自动关闭进程内日线缓存并报警（**不改变监控范围**，缩小股票池仍需显式设 `UNIVERSE_SIZE`） |
 | `UNIVERSE_SIZE` | `300` | 合成演示数据的股票数量 |
 | `HTTP_TIMEOUT` | `10` | 外部行情接口超时（秒） |
 | `LOG_LEVEL` | `INFO` | `DEBUG` / `INFO` / `WARNING` / `ERROR` |
@@ -824,6 +825,57 @@ curl -s http://127.0.0.1:8000/api/v1/health | grep -o '"scanReady":[a-z]*'
 > 内存提示：全市场 + 进程内缓存满负荷时，容器实测占用约 **560MB**。
 > 1GB 内存的机器建议把 `UNIVERSE_SIZE` 设为 1500~3000，或把
 > `KLINE_MEMORY_CACHE_SECONDS=0` 关掉内存缓存（以速度换内存）。
+
+#### 14.3.3 小内存服务器：被 OOM 杀掉是「最难查」的故障
+
+**实测案例**：一台 1.73GB 内存、**无 swap**、可用内存只剩 0.34GB 的云主机，
+部署后表现为「所有数据加载失败 / 502 / 时好时坏」。查 `dmesg` 才能看到真相：
+
+```
+Out of memory: Killed process 614769 (python) total-vm:1089312kB,
+               anon-rss:480000kB, UID:1000
+```
+
+`uid=1000` 正是容器内的 `appuser` —— **进程是被内核 OOM 杀掉的**。
+而容器日志里只有一次「启动成功」，看不出任何异常，所以极难定位。
+
+**为什么内存会不够**：本项目按全市场（约 5500 只）运行时实测需要
+
+| 场景 | 内存 |
+|---|---|
+| 稳态（含进程内日线缓存） | 约 560MB |
+| 预热峰值 | 约 950MB |
+| 稳态（关闭进程内缓存后） | 约 315MB |
+
+**已内置的自动保护**（`MEMORY_GUARD=true`，默认开）：
+启动时探测 cgroup 限额与宿主机可用内存，不足 1.2GB 时**自动关闭进程内日线缓存**
+（腾出约 130MB）并在日志里大声报警、给出下面这条可直接照做的命令。
+它**不会**自动缩减股票池 —— 覆盖四个板块是明确需求，减少监控范围必须由你决定。
+
+**推荐处置（按性价比排序）**：
+
+```bash
+# ① 加 2GB swap：最省事、零成本，立刻消除 OOM
+sudo fallocate -l 2G /swapfile && sudo chmod 600 /swapfile
+sudo mkswap /swapfile && sudo swapon /swapfile
+echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+free -h                     # 确认 Swap 已生效
+./deploy.sh                 # 重启后 /health 的 memory.hasSwap 应为 true
+
+# ② 若仍吃紧：把股票池调小。UNIVERSE_SIZE 采用**按板块轮转**截取，
+#    四个板块（主板/创业板/科创板/北交所）都会保留代表，不会整块缺失。
+sed -i 's/^UNIVERSE_SIZE=.*/UNIVERSE_SIZE=2000/' .env && ./deploy.sh
+
+# ③ 长期：升级实例内存（推荐 ≥2GB 专用），即可恢复全市场 + 内存缓存
+```
+
+自查内存是否吃紧（无需登录服务器也能看）：
+
+```bash
+curl -s http://127.0.0.1:8000/api/v1/health | grep -o '"memory":{[^}]*}'
+# lowMemory:true  → 已进入低内存模式，务必按上面①处理
+# hasSwap:false   → 没有 swap，属于高风险配置
+```
 
 **情况 A：容器没在运行（代理自然返回 502）**
 

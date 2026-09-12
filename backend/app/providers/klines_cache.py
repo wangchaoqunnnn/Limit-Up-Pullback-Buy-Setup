@@ -218,56 +218,51 @@ class KlineCache:
             return {}
         cap = int(max(1, max_bars))
         out: dict[str, pd.DataFrame] = {}
-        with self._lock:
-            try:
-                frames: list[pd.DataFrame] = []
-                # 分批查询：SQL 变量数量有上限（默认 999），1000 只必须分片
-                chunk_size = 500
-                for start in range(0, len(ids), chunk_size):
-                    batch = ids[start : start + chunk_size]
-                    marks = ",".join("?" * len(batch))
+
+        # 关键性能点：pandas 的类型转换有固定开销（每次约 10~15ms），
+        # 若对每只股票逐个转换要花 10~15 秒；但若把 137 万行一次性拼起来再转换，
+        # 峰值内存会翻倍（实测约 280MB 全量中间表 + 130MB 结果），
+        # 在 1~2GB 的小内存云主机上正是 OOM 的触发点。
+        # 因此按「分片读取 → 分片转换 → 分片切分 → 立即释放」处理：
+        # 峰值只与单个分片有关，总耗时不变（切分与切片的开销在分片内完成）。
+        chunk_size = 500
+        for start in range(0, len(ids), chunk_size):
+            batch = ids[start : start + chunk_size]
+            marks = ",".join("?" * len(batch))
+            with self._lock:
+                try:
                     rows = self.conn.execute(
                         "SELECT code, date, open, high, low, close, pre_close, pct_chg, volume, amount, turnover "
                         f"FROM bars WHERE code IN ({marks}) ORDER BY code, date",
                         batch,
                     ).fetchall()
-                    if rows:
-                        frames.append(pd.DataFrame(rows, columns=["code", *KLINE_COLUMNS]))
-            except sqlite3.Error as exc:
-                logger.warning("批量读取缓存失败：%s", exc)
-                return out
-
-        if not frames:
-            return out
-
-        # 关键性能点：pandas 的类型转换有固定开销（每次约 10~15ms），
-        # 若对 1000 只股票逐只转换要花 10~15 秒。
-        # 这里改为「全量拼一次 → 只转换一次 → 按代码切分」，开销降到亚秒级。
-        all_rows = pd.concat(frames, ignore_index=True) if len(frames) > 1 else frames[0]
-        # 日期在库里固定是 YYYY-MM-DD 文本：**显式给出 format 极重要**，
-        # 让 pandas 走快路径解析；不指定时它会先尝试推断格式，
-        # 全市场 137 万行实测相差数秒。
-        all_rows["date"] = pd.to_datetime(all_rows["date"], format="%Y-%m-%d", errors="coerce")
-        # 只对「还不是 float64」的列做转换：SQLite 的 REAL 列经 DataFrame 构造后
-        # 通常已是 float64，仅含 NULL 的列才会退化成 object。
-        # 无脑全列 to_numeric 会在 137 万行上白花数秒。
-        for col in KLINE_COLUMNS[1:]:
-            if all_rows[col].dtype != "float64":
-                all_rows[col] = pd.to_numeric(all_rows[col], errors="coerce").astype("float64")
-        all_rows = all_rows.dropna(subset=["date"])
-        if all_rows.empty:
-            return out
-        # 不再额外 sort_values：上面的 SQL 已经是 ORDER BY code, date，
-        # 与索引 (code, date) 同序，pandas 的 groupby 会保持组内出现顺序，
-        # 因此 group.tail(cap) 取到的就是「最近 cap 根」。
-        # （早期实现多了一次 sort_values，在 137 万行上属纯浪费。）
-
-        # 单次 groupby 切分，尾取 cap 根
-        for code, group in all_rows.groupby("code", sort=False):
-            tail = group.tail(cap) if len(group) > cap else group
-            df = tail[KLINE_COLUMNS].reset_index(drop=True)
-            if not df.empty:
-                out[str(code)] = df
+                except sqlite3.Error as exc:
+                    logger.warning("批量读取缓存失败：%s", exc)
+                    return out
+            if not rows:
+                continue
+            chunk = pd.DataFrame(rows, columns=["code", *KLINE_COLUMNS])
+            del rows
+            # 日期在库里固定是 YYYY-MM-DD 文本：**显式给出 format 极重要**，
+            # 让 pandas 走快路径解析；不指定时会先尝试推断格式，差数秒。
+            chunk["date"] = pd.to_datetime(chunk["date"], format="%Y-%m-%d", errors="coerce")
+            # 只对「还不是 float64」的列做转换：SQLite 的 REAL 列经 DataFrame 构造后
+            # 通常已是 float64，仅含 NULL 的列才退化成 object。
+            for col in KLINE_COLUMNS[1:]:
+                if chunk[col].dtype != "float64":
+                    chunk[col] = pd.to_numeric(chunk[col], errors="coerce").astype("float64")
+            chunk = chunk.dropna(subset=["date"])
+            if chunk.empty:
+                del chunk
+                continue
+            # 不再额外 sort_values：SQL 已是 ORDER BY code, date，与索引同序，
+            # pandas 的 groupby 保持组内出现顺序，group.tail(cap) 即「最近 cap 根」。
+            for code, group in chunk.groupby("code", sort=False):
+                tail = group.tail(cap) if len(group) > cap else group
+                df = tail[KLINE_COLUMNS].reset_index(drop=True)
+                if not df.empty:
+                    out[str(code)] = df
+            del chunk
         return out
 
     # ------------------------------------------------------------------ 写
