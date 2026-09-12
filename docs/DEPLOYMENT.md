@@ -757,6 +757,8 @@ ss -lntp | grep 8000                           # ⑥ 端口监听
 | 时区错误、交易日不对 | 容器时区非东八区 | `.env` 设 `TZ=Asia/Shanghai` 后 `docker compose up -d --force-recreate` |
 | 镜像构建卡在 `npm ci` | npm 源缓慢 | 在 `frontend/.npmrc` 配置国内源（如 `registry=https://registry.npmmirror.com`） |
 | 修改 `.env` 不生效 | 环境变量在容器创建时注入 | `docker compose up -d --force-recreate` |
+| `./diagnose.sh: No such file or directory` | 服务器上的克隆不是最新代码（旧提交里没有该脚本） | `git fetch origin && git pull --ff-only`；或被拒时 `git checkout origin/main -- diagnose.sh` |
+| `./diagnose.sh: Permission denied` | 可执行位丢失（从 Windows 拷贝等） | 用 `sh diagnose.sh`，或 `chmod +x diagnose.sh` |
 
 ### 14.3 502 / 请求超时 / 全站加载失败
 
@@ -765,9 +767,24 @@ ss -lntp | grep 8000                           # ⑥ 端口监听
 
 ```bash
 cd <项目目录>
-./diagnose.sh                 # 自动读取同目录 .env
-./diagnose.sh --port 8080     # 端口不是默认值时手动指定
+sh diagnose.sh                # 用 sh 调用最稳妥（不依赖可执行位）
+sh diagnose.sh --port 8080    # 端口不是默认值时手动指定
 ```
+
+> **若提示 `./diagnose.sh: No such file or directory`**：这不是文件损坏，
+> 而是**你服务器上的代码不是最新的**（旧克隆停在较早的提交，那时还没有这个脚本）。
+> 执行下面的命令即可取到最新代码：
+>
+> ```bash
+> git fetch origin
+> git log --oneline -1 origin/main     # 确认远端最新提交
+> git pull --ff-only                   # 若本地无改动
+> # 本地有改动导致 pull 被拒时，只取这一个文件（无需处理分支）：
+> git checkout origin/main -- diagnose.sh
+> chmod +x diagnose.sh
+> ```
+>
+> 若用 `./diagnose.sh` 提示 `Permission denied`，同样用 `sh diagnose.sh` 即可绕过。
 
 #### 14.3.1 先分清「502」和「超时」——性质完全不同
 
