@@ -468,6 +468,60 @@ server {
 }
 ```
 
+### 6.3 使用宝塔面板（BT-Panel）反向代理
+
+国内服务器很常见装了宝塔面板。**注意宝塔的 nginx 会占用 80 端口**，
+而本项目容器默认在 8000 —— 两者并不冲突，但反代配错就会直接返回
+**502 Bad Gateway**（nginx 连不上后端时就是这个错，见 14.3 节）。
+
+推荐做法（不改代码、不加内存开销）：
+
+1. 宝塔面板 → **网站** → 添加站点（用你的域名，不用建数据库）；
+2. 进入该站点 → **反向代理** → 添加反向代理：
+   - 代理名称：随意，例如 `stock`
+   - 目标 URL：**`http://127.0.0.1:8000`**（必须与 `.env` 里的 `HOST_PORT` 完全一致；
+     用 `docker port limit-up-app` 核对实际映射端口）
+   - 发送域名：`$host`
+3. 打开宝塔的 **配置文件**，在 `location /` 里确认有超时设置 —— 这一步很关键：
+
+```nginx
+location / {
+    proxy_pass         http://127.0.0.1:8000;
+    proxy_http_version 1.1;
+    proxy_set_header   Host              $host;
+    proxy_set_header   X-Real-IP         $remote_addr;
+    proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+    proxy_set_header   X-Forwarded-Proto $scheme;
+    # 本项目重接口首次可能跑几分钟（全市场取数），默认 60s 会变成 502/504
+    proxy_connect_timeout 10s;
+    proxy_send_timeout    300s;
+    proxy_read_timeout    300s;
+    proxy_buffering       off;
+}
+```
+
+排障三条命令（宝塔的路径与原生 nginx 不同）：
+
+```bash
+# ① 反代目标指向哪里（确认端口写对）
+grep -rn 'proxy_pass' /www/server/panel/vhost/nginx/ 2>/dev/null | head
+
+# ② 502 的直接证据：错误日志里会写明 connect() failed / upstream timed out
+tail -n 50 /www/wwwlogs/*.error.log 2>/dev/null | tail -n 30
+
+# ③ 目标端口本机是否真的通
+curl -s -o /dev/null -w '本机 8000 = %{http_code}\n' http://127.0.0.1:8000/api/v1/health
+```
+
+| 错误日志内容 | 含义 | 处理 |
+|---|---|---|
+| `connect() failed (111: Connection refused)` | 后端没在跑 | 容器挂了（多为**内存不足被 OOM 杀掉**，见 14.3.4） |
+| `upstream timed out` | 后端太慢 | 放宽 `proxy_read_timeout`；并确认已用新版（旧版读缓存会阻塞 44 秒） |
+| 无任何错误但仍 502 | 宝塔「网站」里未启用反代 / 命中了别的站点 | 检查站点是否绑定正确域名与端口 |
+
+> **仅当机器内存宽裕时才考虑 HTTPS 模式**：本项目内置 Caddy 也占内存，
+> 1.7GB 这类小机器建议直接用宝塔反代 + 宝塔申请证书，不要再跑一个 Caddy 容器。
+
 后端已使用 `--proxy-headers --forwarded-allow-ips='*'` 启动，可正确识别 `X-Forwarded-*`，因此日志与限流中记录的是真实客户端 IP。
 
 ---
